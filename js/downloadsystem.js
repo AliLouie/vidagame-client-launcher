@@ -40,7 +40,8 @@ app.on('activate', function () {
   if (mainWindow === null) createWindow();
 });
 
-const DISCORD_WEBHOOK_URL = 'ChangeME';
+require('dotenv').config();
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
 async function sendErrorToDiscord(InfoLog, error) {
   const errorMessage = {
