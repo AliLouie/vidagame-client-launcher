@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Choose Download Path</title>
+  <style>
+
+    @import url('../css/fonts/vazirFont.css');
+    
+    body {
+      text-align: center;
+      margin: 20px;
+      background: linear-gradient(112.1deg, rgb(32, 38, 57) 11.4%, rgb(63, 76, 119) 70.2%);      
+      height: 2000px;
+      overflow-x: hidden;
+      overflow-y: hidden;
+      font-family: 'vazir', sans-serif;
+    }
+
+    label {
+      display: block;
+      color: white;
+      margin-bottom: 10px;
+      font-family: 'vazir', sans-serif;
+    }
+
+    input {
+      direction: rtl;
+      width: 80%;
+      padding: 8px;
+      margin-bottom: 20px;
+      font-family: 'vazir', sans-serif;
+    }
+
+    button {
+      padding: 10px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-family: 'vazir', sans-serif;
+    }
+
+    h2 {
+      color: white;
+      padding-top: 40px;
+    }
+
+    .ok-button {
+     padding: 9px 24px;
+     color: white;
+     font-size: 23px;    
+     margin: 0 3px;
+     cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h2>مسیر نصب خود را انتخاب کنید</h2>
+  <form id="downloadPathForm">
+    <label for="path">:مسیر دانلود</label>
+    <input type="text" id="path" name="path" placeholder="انتخاب مسیر دانلود..." readonly>
+    <button type="button" onclick="openFileDialog()">مسیریابی</button>
+    <br>
+    <button class="ok-button" type="button" onclick="selectDownloadPath()">ذخیره و نصب</button>
+  </form>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+
+function openFileDialog() {
+  // Open a dialog to select the download path
+  ipcRenderer.send('open-file-dialog');
+
+  // Listen for the response from the main process
+  ipcRenderer.once('selected-path', (event, path) => {
+    // Set the selected path to the input field
+    document.getElementById('path').value = path;
+  });
+}
+
+function selectDownloadPath() {
+  // Get the selected path
+  const selectedPath = document.getElementById('path').value;
+
+  // Send the selected path to the main process
+  ipcRenderer.send('download-path-selected', selectedPath);
+}
+  </script>
+</body>
+</html>
