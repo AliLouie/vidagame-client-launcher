@@ -40,7 +40,7 @@ app.on('activate', function () {
   if (mainWindow === null) createWindow();
 });
 
-const DISCORD_WEBHOOK_URL = 'https://hooks.slack.com/services/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';
+const DISCORD_WEBHOOK_URL = 'ChangeME';
 
 async function sendErrorToDiscord(InfoLog, error) {
   const errorMessage = {
