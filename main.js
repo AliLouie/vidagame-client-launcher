@@ -59,7 +59,7 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadURL('http://localhost:3000/'); // React app runs on this URL // https://vidagame.ir/ | http://localhost:3000/
+  mainWindow.loadURL('https://vidagame.ir/'); // React app runs on this URL // https://vidagame.ir/ | http://localhost:3000/
   mainWindow.setBackgroundColor('#111214')
 
     // IPC listener to check and set the token
