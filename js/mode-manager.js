@@ -153,24 +153,23 @@ ipcMain.on('mode-download-file', async (event, args) => {
         // Send the updated mod data to the renderer process
         event.sender.send('mod-status-updated', existingJsonData[appid].mods[modIndex]);
 
-        // Update the DayZ_Connect.ini file if appid is 221100
+        // Update the DayZ.Bat file if appid is 221100
       if (appid === '221100') {
-        const iniFilePath = path.join(downloadPath, 'DayZ_Connect.ini');
-        const enabledMods = existingJsonData[appid].mods
-          .filter(mod => mod.status)
-          .map(mod => `${mod.directory}`);
-        const commandLine = `"-mod=${enabledMods.join(';')}" -name=${user_login}`;
 
-        // Read the existing DayZ_Connect.ini file
-        let iniFileData = await fs.readFile(iniFilePath, 'utf-8');
+      const batFilePath = path.join(downloadPath, 'DayZ.bat');
 
-        // Replace the CommandLine entry with the new command line string
-        iniFileData = iniFileData.replace(/CommandLine = .*/, `CommandLine = ${commandLine}`);
+      const enabledMods = existingJsonData[appid].mods
+        .filter(mod => mod.status)
+        .map(mod => mod.directory);
 
-        // Write the updated data back to the DayZ_Connect.ini file
-        await fs.writeFile(iniFilePath, iniFileData, 'utf-8');
 
-        console.log('DayZ_Connect.ini updated successfully.');
+      const modsString = enabledMods.length > 0 ? enabledMods.join(';') : '';
+
+      const commandLine = `start DayZ_x64.exe -name=${user_login} "-mod=${modsString}"`;
+
+      await fs.writeFile(batFilePath, commandLine, 'utf-8');
+
+      console.log('DayZ.bat updated successfully.');
       }
       //-----------------------
 
