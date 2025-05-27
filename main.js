@@ -10,7 +10,8 @@ const rahasho = require('./js/rahasho')
 const ProgressBar = require('electron-progressbar-customhtml');
 const windowStateKeeper = require('electron-window-state');
 const fs = require('fs').promises;
-
+const Store = require('electron-store');
+const store = new Store();
 
 
 
@@ -58,31 +59,23 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadURL('https://vidagame.ir/'); // React app runs on this URL // https://vidagame.ir/ | http://localhost:3000/
+  mainWindow.loadURL('http://localhost:3000/'); // React app runs on this URL // https://vidagame.ir/ | http://localhost:3000/
   mainWindow.setBackgroundColor('#111214')
 
     // IPC listener to check and set the token
     ipcMain.on('check-token', async (event) => {
-      const userDataPath = app.getPath('userData');
-      const tokenFilePath = path.join(userDataPath, 'token.json');
   
       try {
-        // Check if the token exists in local storage
-        const tokenExists = await mainWindow.webContents.executeJavaScript('localStorage.getItem("@secure.s.token");', true);
+        // Check if the token exists
+        const token = store.get('token');
   
-        if (!tokenExists) {
-          // If token doesn't exist, read it from token.json
-          const tokenFileContent = await fs.readFile(tokenFilePath, 'utf-8');
-          const tokenData = JSON.parse(tokenFileContent);
-  
-          if (tokenData.token) {
-            // Set the token in local storage
-            await mainWindow.webContents.executeJavaScript(`localStorage.setItem("@secure.s.token", "${tokenData.token}");`);
-            console.log('Token added to local storage:', tokenData.token);
-            event.reply('token-checked');
+          if (token) {
+            // Send token to vidagame api
+            console.log('Token added to local storage:', token);
+            event.reply('token-checked', token);
           }
-        } else {
-          console.log('Token already exists in local storage.');
+         else {
+          console.log('Token is not exists in store.');
         }
       } catch (error) {
         console.error('Error checking or setting token:', error);

@@ -3,7 +3,8 @@ const childProcess = require('child_process');
 const path = require('path');
 const fs = require('fs').promises;
 const log = require('electron-log');
-
+const Store = require('electron-store');
+const store = new Store();
 
 // Function to check if Node.js is installed
 function isNodeInstalled() {
@@ -70,27 +71,21 @@ async function showDialog() {
 
     // IPC listener to save the token
 ipcMain.on('save-token', async (event, token) => {
-    const userDataPath = app.getPath('userData');
-    const tokenFilePath = path.join(userDataPath, 'token.json');
-
+    
     try {
-        const tokenData = { token }; // Create an object to save
-        await fs.writeFile(tokenFilePath, JSON.stringify(tokenData, null, 2), 'utf-8');
-        console.log('Token saved to token.json:', tokenData.token);
+        store.set('token', token);
+        console.log('Token saved:', token);
     } catch (error) {
-        console.error('Error writing token.json:', error);
+        console.error('Error writing token', error);
     }
     });
 
 ipcMain.on('delete-token', async () => {
     try {
-        const userDataPath = app.getPath('userData');
-        const tokenFilePath = path.join(userDataPath, 'token.json');
-    
-        await fs.unlink(tokenFilePath);
-        console.log('token.json in UserData deleted successfully');
+        store.delete('token');
+        console.log('token in UserData deleted successfully');
     } catch (error) {
-        console.error('Error deleting token.json:', error);
+        console.error('Error deleting token:', error);
     }
     });
 
