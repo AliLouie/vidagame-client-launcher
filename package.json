@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "7zip-min-electron": "^1.4.4",
-    "axios": "^1.6.3",
+    "axios": "^1.12.2",
     "cookie": "^0.6.0",
     "crypto": "^1.0.1",
     "discord-webhook-node": "^1.1.8",

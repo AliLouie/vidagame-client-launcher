@@ -482,11 +482,58 @@ ipcMain.on('request-downloaded-games', async (event) => {
 });
 
 
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
 const https = require('https');
+let gameProcessName = "";
 
+// Function to check if the process is running (Windows)
+function isProcessRunning(processName, callback) {
+  exec(`tasklist /FI "IMAGENAME eq ${processName}"`, (err, stdout, stderr) => {
+    if (err) {
+      console.error('Error checking processes:', err);
+      callback(false);
+      return;
+    }
+    // If output contains process name, process is running
+    const running = stdout.toLowerCase().includes(processName.toLowerCase());
+    callback(running);
+  });
+}
+
+// Function to kill process by name (Windows)
+function killProcessByName(processName, callback) {
+  exec(`taskkill /IM "${processName}" /T /F`, (err, stdout, stderr) => {
+    if (err) {
+      console.error('Error killing process:', err);
+      callback(false);
+      return;
+    }
+    callback(true);
+  });
+}
+
+function monitorGameProcess(appid) {
+  const interval = setInterval(() => {
+    if (!gameProcessName) {
+      clearInterval(interval);
+      return;
+    }
+    isProcessRunning(gameProcessName, (running) => {
+      const focusedWindow = BrowserWindow.getFocusedWindow();
+      if (focusedWindow) {
+        focusedWindow.webContents.send('game-process-status', { appid, isRunning: running });
+      }
+      // Stop monitoring if process is not running anymore
+      if (!running) {
+        clearInterval(interval);
+        gameProcessName = "";
+      }
+    });
+  }, 2000);
+}
 
 ipcMain.on('play-startup-file', async (event, { appid, downloadPath, startupFile, manifesturl, executeFile, token }) => {
+  gameProcessName = path.basename(startupFile);
   const filePath = path.join(downloadPath, startupFile);
 
   // Log the file path for debug purposes
@@ -504,6 +551,7 @@ ipcMain.on('play-startup-file', async (event, { appid, downloadPath, startupFile
       const scriptPath = saveScriptToFile(scriptContent, token, downloadPath);
       // Execute the script
       executeScript(scriptPath, downloadPath, startupFile);
+      monitorGameProcess(appid);
     } catch (error) {
       console.error('Error fetching or executing script:', error);
       const InfoLog = { token, appid, downloadPath, startupFile };
@@ -575,6 +623,14 @@ serverManifest.compress.forEach((serverFile) => {
   }
 });
 
+ipcMain.on('close-game-process', (event) => {
+  if (!gameProcessName) return;
+  killProcessByName(gameProcessName, (success) => {
+    if (success) {
+      event.sender.send('game-process-status', { isRunning: false });
+    }
+  });
+});
 
 //// update_files verify:
 
