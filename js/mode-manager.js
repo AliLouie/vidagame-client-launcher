@@ -8,13 +8,13 @@ const _7z = require('7zip-min-electron');
 
 ipcMain.on('mode-download-file', async (event, args) => {
     
-        const { properties, appid, downloadPath, id, mode_name, game_type, downloadurl, directory, size, version, token } = args;
+        const { properties, appid, downloadPath, id, mode_name, game_type, downloadurl, directory, modeid, size, version, token } = args;
   
         console.log('Received info:', directory);
 
         const GameDownloadedPath = downloadPath
 
-        saveModePathToJson(GameDownloadedPath, appid, id, mode_name, game_type, directory, size, version, false, true, false);
+        saveModePathToJson(GameDownloadedPath, appid, id, mode_name, game_type, directory, modeid, size, version, false, true, false);
 
         try {
 
@@ -104,7 +104,7 @@ ipcMain.on('mode-download-file', async (event, args) => {
             
               await extractPromise;
             
-              await saveModePathToJson(GameDownloadedPath, appid, id, mode_name, game_type, directory, size, version, true, true, false);
+              await saveModePathToJson(GameDownloadedPath, appid, id, mode_name, game_type, directory, modeid, size, version, true, true, false);
 
               event.sender.send('download-mods-completed', { appid, savePath: downloadPath });
             
@@ -236,6 +236,67 @@ ipcMain.on('mode-download-file', async (event, args) => {
         }
       }
       //-------------
+      //--------------- Project Zomboid:
+      if (appid === '108600') {
+        try {
+          const userProfile = process.env.USERPROFILE || process.env.HOME;
+          const zomboidModsPath = path.join(userProfile, 'Zomboid', 'mods');
+          const defaultTxtPath = path.join(zomboidModsPath, 'default.txt');
+          
+          // Extract ACTUAL folder name from directory
+          const fullDirectory = existingJsonData[appid].mods[modIndex].directory;
+          const modFolderName = fullDirectory.split(path.sep).pop();
+          const modeid = existingJsonData[appid].mods[modIndex].modeid;
+          
+          const modFolderPath = path.join(zomboidModsPath, modFolderName);
+          const sourceModPath = path.join(downloadPath, fullDirectory);
+
+          // Ensure Zomboid/mods directory exists
+          await fs.mkdir(zomboidModsPath, { recursive: true });
+
+          // FIXED LOGIC: status = true → ENABLE, status = false → DISABLE
+          const newStatus = existingJsonData[appid].mods[modIndex].status;
+
+          if (newStatus === true) {
+            // ENABLE MOD: copy if doesn't exist, add to default.txt
+            const modExists = await fs.access(modFolderPath, fs.constants.F_OK)
+              .then(() => true)
+              .catch(() => false);
+
+            if (!modExists) {
+              await fs.cp(sourceModPath, modFolderPath, { recursive: true, force: false });
+              console.log(`Copied ${modFolderName} from ${sourceModPath} to ${modFolderPath}`);
+            }
+
+            await updateZomboidDefaultTxt(defaultTxtPath, modeid, 'add');
+            console.log(`Project Zomboid mod ${mode_name} ENABLED`);
+            
+          } else {
+            // DISABLE MOD: remove from default.txt, move to disabled
+            await updateZomboidDefaultTxt(defaultTxtPath, modeid, 'remove');
+
+            const disabledModsPath = path.join(zomboidModsPath, '..', 'mods_disabled');
+            await fs.mkdir(disabledModsPath, { recursive: true });
+            const disabledModPath = path.join(disabledModsPath, modFolderName);
+            
+            try {
+              await fs.rename(modFolderPath, disabledModPath);
+              console.log(`Moved ${modFolderName} to disabled folder`);
+            } catch (err) {
+              console.log(`Mod folder already disabled or not found: ${modFolderName}`);
+            }
+            
+            console.log(`Project Zomboid mod ${mode_name} DISABLED`);
+          }
+
+        } catch (error) {
+          console.error('Error handling Project Zomboid mod:', error);
+        }
+      }
+
+
+      //---------------
+
 
       } else {
         console.error(`Mode not found for appid ${appid}, id ${id}`);
@@ -287,6 +348,12 @@ ipcMain.on('mode-download-file', async (event, args) => {
   
       // Find the mod in the mods array
       const modIndex = existingJsonData[appid].mods.findIndex(mod => mod.id === id && mod.mode_name === mode_name);
+      
+      //-----------------
+      if (appid === '108600') {
+      await cleanUpProjectZomboidMod(appid, existingJsonData[appid].mods[modIndex] || args, downloadPath);
+      }
+      //-----------------
   
       if (modIndex !== -1) {
         // Remove the mod from the mods array
@@ -354,7 +421,7 @@ function formatBytes(bytes) {
 
 
 
-  async function saveModePathToJson(GameDownloadedPath, appid, id, mode_name, game_type, directory, size, version, installed = true, updated = true, status = false) {
+  async function saveModePathToJson(GameDownloadedPath, appid, id, mode_name, game_type, directory, modeid, size, version, installed = true, updated = true, status = false) {
     const jsonFilePath = path.join(app.getPath('userData'), 'mods-path.json');
     console.log("info:", GameDownloadedPath, mode_name, appid);
   
@@ -383,10 +450,10 @@ function formatBytes(bytes) {
   
       if (modIndex !== -1) {
         // Update the existing mod
-        existingJsonData[appid].mods[modIndex] = { id, mode_name, game_type, directory, installed, updated, status, size, version };
+        existingJsonData[appid].mods[modIndex] = { id, mode_name, game_type, directory, modeid, installed, updated, status, size, version };
       } else {
         // Add a new mod
-        existingJsonData[appid].mods.push({ id, mode_name, game_type, directory, installed, updated, status, size, version });
+        existingJsonData[appid].mods.push({ id, mode_name, game_type, directory, modeid, installed, updated, status, size, version });
       }
   
       // Convert JSON data to string
@@ -402,7 +469,7 @@ function formatBytes(bytes) {
         const jsonData = {
           [appid]: {
             downloadPath: GameDownloadedPath,
-            mods: [{ id, mode_name, game_type, directory, installed, updated, status, size, version }]
+            mods: [{ id, mode_name, game_type, directory, modeid, installed, updated, status, size, version }]
           }
         };
   
@@ -419,3 +486,98 @@ function formatBytes(bytes) {
     }
   }
   
+
+
+  async function updateZomboidDefaultTxt(defaultTxtPath, modFolderName, action) {
+  let defaultTxtContent = `VERSION = 1,
+
+mods
+{
+}
+
+maps
+{
+}`;
+
+  try {
+    defaultTxtContent = await fs.readFile(defaultTxtPath, 'utf8');
+  } catch (err) {
+    console.log('default.txt not found, creating with default content');
+  }
+
+  const modLine = `mod = ${modFolderName},`;
+  
+  if (action === 'add') {
+    // Check if mod is already in the list
+    if (!defaultTxtContent.includes(modLine)) {
+      // Find mods section and insert new mod entry
+      const modsRegex = /(mods\s*\{[\s\S]*?\})/i;
+      const match = defaultTxtContent.match(modsRegex);
+      
+      if (match) {
+        // Insert before closing brace, maintaining indentation
+        const replacement = match[1].replace(/(\}\s*)$/m, `\n\t${modLine}\n$1`);
+        defaultTxtContent = defaultTxtContent.replace(modsRegex, replacement);
+      } else {
+        // No mods section found, append to end before maps
+        const insertPos = defaultTxtContent.indexOf('maps');
+        if (insertPos !== -1) {
+          defaultTxtContent = defaultTxtContent.slice(0, insertPos) + `\n\t${modLine}` + defaultTxtContent.slice(insertPos);
+        } else {
+          defaultTxtContent += `\n\t${modLine}`;
+        }
+      }
+    }
+  } else if (action === 'remove') {
+    // Remove all instances of this mod line
+    const modLineRegex = new RegExp(`\\s*mod\\s*=\\s*${modFolderName},?\\s*`, 'gmi');
+    defaultTxtContent = defaultTxtContent.replace(modLineRegex, '');
+    
+    // Clean up empty lines
+    defaultTxtContent = defaultTxtContent.replace(/^\s*[\r\n]/gm, '');
+  }
+
+  await fs.writeFile(defaultTxtPath, defaultTxtContent, 'utf8');
+  console.log(`${action === 'add' ? 'Added' : 'Removed'} ${modFolderName} from ${defaultTxtPath}`);
+}
+
+
+async function cleanUpProjectZomboidMod(appid, mod, downloadPath) {
+  if (appid !== '108600') return; // Only run for Project Zomboid
+
+  try {
+    const userProfile = process.env.USERPROFILE || process.env.HOME;
+    const zomboidModsPath = path.join(userProfile, 'Zomboid', 'mods');
+    const defaultTxtPath = path.join(zomboidModsPath, 'default.txt');
+
+    const fullDirectory = mod.directory;
+    const modFolderName = fullDirectory.split(path.sep).pop();
+    const modeid = mod.modeid;
+
+    // Remove from default.txt
+    await updateZomboidDefaultTxt(defaultTxtPath, modeid, 'remove');
+    console.log(`Removed ${modeid} from Project Zomboid default.txt`);
+
+    // Delete mod folder from Zomboid/mods
+    const modFolderPath = path.join(zomboidModsPath, modFolderName);
+    try {
+      await fs.rm(modFolderPath, { recursive: true, force: true });
+      console.log(`Deleted Project Zomboid mod folder: ${modFolderPath}`);
+    } catch (err) {
+      console.log(`Project Zomboid mod folder not found or already deleted: ${modFolderPath}`);
+    }
+
+    // Delete mod folder from mods_disabled folder as well
+    const disabledModsPath = path.join(zomboidModsPath, '..', 'mods_disabled');
+    const disabledModPath = path.join(disabledModsPath, modFolderName);
+    try {
+      await fs.rm(disabledModPath, { recursive: true, force: true });
+      console.log(`Deleted Project Zomboid disabled mod folder: ${disabledModPath}`);
+    } catch (err) {
+      console.log(`Project Zomboid disabled mod folder not found: ${disabledModPath}`);
+    }
+
+  } catch (error) {
+    console.error('Error cleaning up Project Zomboid mod:', error);
+  }
+}
