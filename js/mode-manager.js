@@ -31,6 +31,14 @@ ipcMain.on('mode-download-file', async (event, args) => {
           // Subscribe to error event
           dl.on('error', (error) => {
             console.error(`Download error for file ${mode_name}:`, error);
+              event.sender.send('download-failed', {
+                id,
+                appid,
+                mode_name,
+                message: error.message || 'خطا در دانلود مود',
+              });
+
+              event.sender.send('download-stopped', { id });
             reject(error);
           });
 
@@ -87,7 +95,10 @@ ipcMain.on('mode-download-file', async (event, args) => {
                     reject(err);
                   } else {
                     console.log(`File ${fileName} extracted successfully.`);
-                    event.sender.send('remove-notification', {id: id});
+                    event.sender.send('remove-notification', {
+                      id,
+                      mode_name,
+                    });
                     resolve();
 
                     fs.unlink(downloadedFilePath, err => {
@@ -116,7 +127,18 @@ ipcMain.on('mode-download-file', async (event, args) => {
 
           });
       
-          dl.start();
+          dl.start().catch((dlError) => {
+          console.error('Downloader start failed:', dlError);
+          event.sender.send('download-failed', {
+          id,
+          appid,
+          mode_name,
+          message: dlError.message || 'خطا در شروع دانلود مود',
+        });
+
+          event.sender.send('download-stopped', { id });
+        });
+
         } catch (error) {
           console.error('Error downloading mode:', error);
         }
@@ -365,6 +387,25 @@ ipcMain.on('mode-download-file', async (event, args) => {
         // Write the updated JSON string to the file
         await fs.writeFile(jsonFilePath, jsonString, 'utf-8');
 
+      // if this is DayZ, rebuild DayZ.bat without the deleted mod
+      if (appid === '221100') {
+        const batFilePath = path.join(downloadPath, 'DayZ.bat');
+
+        // Only keep mods that are still present AND status=true
+        const enabledMods = (existingJsonData[appid]?.mods || [])
+          .filter(mod => mod.status)
+          .map(mod => mod.directory);
+
+        const modsString = enabledMods.length > 0 ? enabledMods.join(';') : '';
+        // You may not have user_login here; use a safe fallback
+        const user_login = args.user_login || 'Player';
+
+        const commandLine = `start DayZ_x64.exe -name=${user_login} "-mod=${modsString}"`;
+
+        await fs.writeFile(batFilePath, commandLine, 'utf-8');
+        console.log('DayZ.bat updated after delete.');
+      }
+
         const fileName = directory
         const downloadedFilePath = path.join(downloadPath, fileName);
         try {
@@ -581,3 +622,52 @@ async function cleanUpProjectZomboidMod(appid, mod, downloadPath) {
     console.error('Error cleaning up Project Zomboid mod:', error);
   }
 }
+
+
+ipcMain.on('check-server-mods-status', async (event, { appid, required_mods, server_name, server_id }) => {
+  const jsonFilePath = path.join(app.getPath('userData'), 'mods-path.json');
+  
+  try {
+    const data = await fs.readFile(jsonFilePath, 'utf-8');
+    const modsData = JSON.parse(data);
+    const appMods = modsData[appid]?.mods || [];
+    
+    // Parse required mod IDs
+    const requiredIds = required_mods.split(',').map(id => String(id.trim()));
+    
+    // Check each required mod
+    const status = requiredIds.map(reqId => {
+      const mod = appMods.find(m => String(m.id) === reqId);
+      if (!mod) return { id: reqId, status: 'missing' };
+      if (!mod.installed) return { id: reqId, status: 'not-installed' };
+      if (!mod.status) return { id: reqId, status: 'inactive' };
+      return { id: reqId, status: 'active' };
+    });
+    
+    // Summary stats
+    const summary = {
+      total_required: requiredIds.length,
+      missing: status.filter(s => s.status === 'missing').length,
+      not_installed: status.filter(s => s.status === 'not-installed').length,
+      inactive: status.filter(s => s.status === 'inactive').length,
+      active: status.filter(s => s.status === 'active').length,
+      all_ready: status.every(s => s.status === 'active')
+    };
+    
+    event.reply('server-mods-status-checked', {
+      appid,
+      server_name,
+      server_id,
+      status: summary,
+      details: status // full details if needed
+    });
+    
+  } catch (error) {
+    console.error('Error checking server mods:', error);
+    event.reply('server-mods-status-checked', {
+      appid,
+      server_name,
+      status: { total_required: 0, missing: 0, not_installed: 0, inactive: 0, active: 0, all_ready: false }
+    });
+  }
+});

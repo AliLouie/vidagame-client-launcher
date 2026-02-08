@@ -4,7 +4,7 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const downloadsystem = require('./js/downloadsystem')
 const promptnode = require('./js/promptnode')
-const updatechecker = require('./js/updatechecker')
+//const updatechecker = require('./js/updatechecker')
 const modemanager = require('./js/mode-manager')
 const rahasho = require('./js/rahasho')
 const ProgressBar = require('electron-progressbar-customhtml');
@@ -59,7 +59,7 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadURL('https://vidagame.ir/'); // React app runs on this URL // https://vidagame.ir/ | http://localhost:3000/
+  mainWindow.loadURL('http://localhost:3000/'); // React app runs on this URL // https://vidagame.ir/ | http://localhost:3000/
   mainWindow.setBackgroundColor('#111214')
 
     // IPC listener to check and set the token

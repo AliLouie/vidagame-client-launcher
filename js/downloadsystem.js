@@ -7,6 +7,7 @@ const fs = require('fs').promises;
 const fse = require('fs-extra')
 const axios = require('axios');
 const _7z = require('7zip-min-electron');
+const vm = require('vm');
 
 
 
@@ -512,28 +513,53 @@ function killProcessByName(processName, callback) {
   });
 }
 
+function sendGameStatusToAnyWindow(payload) {
+  let focusedWindow = BrowserWindow.getFocusedWindow();
+
+  if (focusedWindow && !focusedWindow.isDestroyed()) {
+    focusedWindow.webContents.send('game-process-status', payload);
+    return;
+  }
+
+  // Fallback: try all windows
+  const allWindows = BrowserWindow.getAllWindows();
+  if (allWindows.length > 0) {
+    const target = allWindows[0];
+    if (!target.isDestroyed()) {
+      target.webContents.send('game-process-status', payload);
+    }
+  }
+}
+
+let gameMonitorInterval = null;
+
 function monitorGameProcess(appid) {
-  const interval = setInterval(() => {
+  if (gameMonitorInterval) {
+    clearInterval(gameMonitorInterval);
+    gameMonitorInterval = null;
+  }
+
+  gameMonitorInterval = setInterval(() => {
     if (!gameProcessName) {
-      clearInterval(interval);
+      clearInterval(gameMonitorInterval);
+      gameMonitorInterval = null;
       return;
     }
     isProcessRunning(gameProcessName, (running) => {
-      const focusedWindow = BrowserWindow.getFocusedWindow();
-      if (focusedWindow) {
-        focusedWindow.webContents.send('game-process-status', { appid, isRunning: running });
-      }
-      // Stop monitoring if process is not running anymore
+      sendGameStatusToAnyWindow({ appid, isRunning: running });
       if (!running) {
-        clearInterval(interval);
+        clearInterval(gameMonitorInterval);
+        gameMonitorInterval = null;
         gameProcessName = "";
       }
     });
   }, 2000);
 }
 
-ipcMain.on('play-startup-file', async (event, { appid, downloadPath, startupFile, manifesturl, executeFile, token }) => {
-  gameProcessName = path.basename(startupFile);
+
+
+ipcMain.on('play-startup-file', async (event, { appid, downloadPath, startupFile, proccessName, manifesturl, executeFile, token, direct, serverIp, serverPort }) => {
+  gameProcessName = path.basename(proccessName);
   const filePath = path.join(downloadPath, startupFile);
 
   // Log the file path for debug purposes
@@ -541,18 +567,28 @@ ipcMain.on('play-startup-file', async (event, { appid, downloadPath, startupFile
   console.log('Received manifest URL:', manifesturl);
   console.log('Received appid:', appid);
   // console.log('execute file:', executeFile)
-  // console.log('Token:', token)
+  //console.log('Token:', token)
 
 
+    let vmFailed = false;
     // Fetch the Node.js script content from the URL
     try {
       const scriptContent = await fetchScriptContent(executeFile);
-      // Save the script content to a temporary file
-      const scriptPath = saveScriptToFile(scriptContent, token, downloadPath);
       // Execute the script
-      executeScript(scriptPath, downloadPath, startupFile);
+    await runStartupScriptInVM(scriptContent, {
+      appid,
+      downloadPath,
+      startupFile,
+      manifesturl,
+      token,
+      direct,
+      serverIp,
+      serverPort,
+    });
+
       monitorGameProcess(appid);
     } catch (error) {
+      vmFailed = true;
       console.error('Error fetching or executing script:', error);
       const InfoLog = { token, appid, downloadPath, startupFile };
       await sendErrorToDiscord(InfoLog, error);
@@ -671,7 +707,7 @@ if (serverManifest.updates && serverManifest.updates.length > 0) {
 }
 //-------------
 
-if (!versionMismatch) {
+if (!versionMismatch && vmFailed) {
   openFile(downloadPath, startupFile);
 }
 });
@@ -692,52 +728,25 @@ function fetchScriptContent(scriptUrl) {
   });
 }
 
-function saveScriptToFile(scriptContent, token, downloadPath) {
-  try {
-    // Get the userData path for the application
-    const userDataPath = app.getPath('userData');
 
-    // Create a directory for scripts if it doesn't exist
-    const scriptsDir = path.join(userDataPath, 'scripts');
-      fs.mkdir(scriptsDir, { recursive: true });
+async function runStartupScriptInVM(scriptCode, ctx) {
+  const sandbox = {
+    console,
+    require,
+    Buffer,
+    process,
+    context: ctx,
+    startGame: ({ downloadPath, startupFile }) => {
+      openFile(downloadPath, startupFile);
+    },
+  };
 
-    // Generate a unique file name for the script
-    const scriptFileName = `execute.js`;
-    const scriptFilePath = path.join(scriptsDir, scriptFileName);
-
-    // Write the script content to the file
-    fs.writeFile(scriptFilePath, scriptContent);
-
-    // Save the token to a separate JSON file
-    const tokenFilePath = path.join(downloadPath, 'token.json');
-    fs.writeFile(tokenFilePath, JSON.stringify({ token }));  
-
-    return scriptFilePath;
-  } catch (error) {
-    console.error('Error saving script to file:', error);
-    const InfoLog = { token, downloadPath };
-    sendErrorToDiscord(InfoLog, error);
-    throw error;
-  }
+  vm.createContext(sandbox);
+  const script = new vm.Script(scriptCode, { filename: 'remote-startup.js' });
+  script.runInContext(sandbox);
 }
 
-function executeScript(scriptPath, downloadPath, startupFile) {
-  const scriptProcess = spawn('node', [scriptPath, downloadPath, startupFile], {
-    cwd: downloadPath
-  });
 
-  scriptProcess.stdout.on('data', (data) => {
-    console.log(`Script stdout: ${data}`);
-  });
-
-  scriptProcess.stderr.on('data', (data) => {
-    console.error(`Script stderr: ${data}`);
-  });
-
-  scriptProcess.on('close', (code) => {
-    console.log(`Script process exited with code ${code}`);
-  });
-}
 
 function openFile(downloadPath, startupFile) {
   const filePath = path.join(downloadPath, startupFile);
