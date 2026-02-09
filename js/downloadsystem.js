@@ -42,45 +42,30 @@ app.on('activate', function () {
 });
 
 require('dotenv').config();
-const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
-async function sendErrorToDiscord(InfoLog, error) {
-  const errorMessage = {
-    blocks: [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*Error Report*`
-        }
-      },
-      {
-        type: 'section',
-        fields: [
-          {
-            type: 'mrkdwn',
-            text: `*InfoLog:*\n\`\`\`${JSON.stringify(InfoLog, null, 2)}\`\`\``
-          },
-          {
-            type: 'mrkdwn',
-            text: `*Error Message:*\n${error.message}`
-          },
-          {
-            type: 'mrkdwn',
-            text: `*Stack Trace:*\n\`\`\`${error.stack}\`\`\``
-          }
-        ]
-      }
-    ]
-  };
+const LOG_URL = process.env.LOG_URL;
+
+async function sendErrorToLog(InfoLog, error) {
+  const time = new Date().toISOString();
 
   try {
-    await axios.post(DISCORD_WEBHOOK_URL, errorMessage);
-    console.log('Error log sent to Slack successfully.');
-  } catch (webhookError) {
-    console.error('Failed to send error log to Slack:', webhookError);
+    await axios.post(LOG_URL, {
+      level: 'error',
+      source: 'launcher-error',
+      message: error.message || 'Unknown error',
+      extra: {
+        ...InfoLog,
+        timestamp: time,
+        stack: error.stack,
+        errorName: error.name
+      }
+    });
+    console.log('Error logged send successfully');
+  } catch (logError) {
+    console.error('Failed to send error log:', logError);
   }
 }
+
 
 let downloadPath = ''; // Declare downloadPath globally
 let dl;
@@ -146,7 +131,7 @@ ipcMain.on('download-file', (event, args) => {
       console.error(`Error adding AppId ${appid} via API:`, error);
       
       const InfoLog = { addAppIdUrl, requestBody, downloadPath };
-      await sendErrorToDiscord(InfoLog, error);
+      await sendErrorToLog(InfoLog, error);
     }
 
       
@@ -198,7 +183,7 @@ ipcMain.on('update-file', async (event, args) => {
     } else {
       console.error('Error checking or reading update-files.json:', error);
       const InfoLog = { vida_id, appid };
-      sendErrorToDiscord(InfoLog, error);
+      sendErrorToLog(InfoLog, error);
       return;
       // Handle other errors as needed but still proceed
     }
@@ -224,7 +209,7 @@ ipcMain.on('update-file', async (event, args) => {
       console.error(`Error adding AppId ${appid} via API:`, error);
 
       const InfoLog = { addAppIdUrl, requestBody, downloadPath };
-      await sendErrorToDiscord(InfoLog, error);
+      await sendErrorToLog(InfoLog, error);
     }
 
       
@@ -265,7 +250,7 @@ try {
   console.error(`Error adding AppId ${appid} via API:`, error);
 
   const InfoLog = { addAppIdUrl, requestBody, downloadPath };
-  await sendErrorToDiscord(InfoLog, error);
+  await sendErrorToLog(InfoLog, error);
 }
 
   
@@ -331,7 +316,7 @@ try {
   console.error(`Error removing downloads AppId ${appid} via API:`, error);
 
   const InfoLog = { vida_id, appid, downloadPath };
-  await sendErrorToDiscord(InfoLog, error);
+  await sendErrorToLog(InfoLog, error);
 }
 
 try {
@@ -367,7 +352,7 @@ try {
               event.reply('download-error', { appid, error: `Error extracting ${zipFile}` });
 
               const InfoLog = { vida_id, appid, downloadPath };
-               sendErrorToDiscord(InfoLog, err);
+               sendErrorToLog(InfoLog, err);
           } else {
               console.log(`File ${zipFile} extracted successfully.`);
               event.reply('repair-complete',  {id: appid});
@@ -379,7 +364,7 @@ try {
   event.reply('download-error', { appid, error: 'Error reading directory' });
 
   const InfoLog = { vida_id, appid, downloadPath };
-  await sendErrorToDiscord(InfoLog, error);
+  await sendErrorToLog(InfoLog, error);
 }
 
   
@@ -445,7 +430,7 @@ async function savePathToJson(selectedPath, appid, installed = true, updated = t
       console.error('Error writing to the JSON file:', error);
       
       const InfoLog = { appid, downloadPath };
-      await sendErrorToDiscord(InfoLog, error);
+      await sendErrorToLog(InfoLog, error);
     }
   }
 }
@@ -478,7 +463,7 @@ ipcMain.on('request-downloaded-games', async (event) => {
     event.reply('downloaded-games', {}); // Send an empty object in case of an error
 
     const InfoLog = { data };
-    await sendErrorToDiscord(InfoLog, error);
+    await sendErrorToLog(InfoLog, error);
   }
 });
 
@@ -591,7 +576,7 @@ ipcMain.on('play-startup-file', async (event, { appid, downloadPath, startupFile
       vmFailed = true;
       console.error('Error fetching or executing script:', error);
       const InfoLog = { token, appid, downloadPath, startupFile };
-      await sendErrorToDiscord(InfoLog, error);
+      await sendErrorToLog(InfoLog, error);
     }
 
   // Construct the local manifest file path based on appid in userData folder
@@ -606,7 +591,7 @@ ipcMain.on('play-startup-file', async (event, { appid, downloadPath, startupFile
   } catch (error) {
     console.error(`Error reading local manifest file for appid ${appid}:`, error);
     const InfoLog = { token, appid, downloadPath };
-    await sendErrorToDiscord(InfoLog, error);
+    await sendErrorToLog(InfoLog, error);
     return; // Exit if there is an error reading the local manifest
   }
 
@@ -618,7 +603,7 @@ ipcMain.on('play-startup-file', async (event, { appid, downloadPath, startupFile
   } catch (error) {
     console.error(`Error fetching server manifest for appid ${appid}:`, error);
     const InfoLog = { token, appid, downloadPath };
-    await sendErrorToDiscord(InfoLog, error);
+    await sendErrorToLog(InfoLog, error);
     return; // Exit if there is an error fetching the server manifest
   }
 
@@ -758,7 +743,7 @@ function openFile(downloadPath, startupFile) {
     console.error('Error opening file:', error);
 
     const InfoLog = { startupFile, downloadPath };
-    sendErrorToDiscord(InfoLog, error);
+    sendErrorToLog(InfoLog, error);
   });
 }
 
@@ -826,7 +811,7 @@ ipcMain.on('delete-game', async (event, { appid, vida_id }) => {
         console.error(`Error removing download data for AppId ${appid} from the database:`, error);
 
         const InfoLog = { vida_id, appid };
-        await sendErrorToDiscord(InfoLog, error);
+        await sendErrorToLog(InfoLog, error);
       }
 
       // Reload the current window
@@ -846,7 +831,7 @@ ipcMain.on('delete-game', async (event, { appid, vida_id }) => {
     event.reply('game-delete-error', { message: 'Error deleting game.' });
 
     const InfoLog = { vida_id, appid };
-    await sendErrorToDiscord(InfoLog, error);
+    await sendErrorToLog(InfoLog, error);
   }
 });
 
@@ -1010,7 +995,7 @@ ipcMain.on('download-game', async (event, gameData) => {
           });
 
           const InfoLog = { token, appid };
-          await sendErrorToDiscord(InfoLog, error);
+          await sendErrorToLog(InfoLog, error);
           return;
       }
   }
@@ -1109,7 +1094,7 @@ downloaderInstance.on('error', async (error) => {
   }
 
   const InfoLog = { token, appid };
-  await sendErrorToDiscord(InfoLog, error);
+  await sendErrorToLog(InfoLog, error);
 });
 
 
@@ -1161,7 +1146,7 @@ downloaderInstance.on('error', async (error) => {
     event.reply('download-error', { appid, error: 'Download timed out', fileName: file.name });
 
     const InfoLog = { token, appid };
-    sendErrorToDiscord(InfoLog, error);
+    sendErrorToLog(InfoLog, error);
   });
 
   downloaderInstance.on('retry', (retryCount, maxRetries) => {
@@ -1200,7 +1185,7 @@ downloaderInstance.on('error', async (error) => {
               event.reply('download-error', { appid, error: `Error extracting ${file.name}` });
 
               const InfoLog = { token, appid };
-              sendErrorToDiscord(InfoLog, err);
+              sendErrorToLog(InfoLog, err);
               
               return;
           }
@@ -1212,7 +1197,7 @@ downloaderInstance.on('error', async (error) => {
                   console.error(`Error deleting ${zipFilePath}:`, err);
 
                   const InfoLog = { token, appid };
-                  sendErrorToDiscord(InfoLog, err);
+                  sendErrorToLog(InfoLog, err);
               } else {
                   console.log(`Deleted ${zipFilePath} after extraction.`);
               }
@@ -1225,7 +1210,7 @@ downloaderInstance.on('error', async (error) => {
       event.reply('download-error', { appid, error: 'Error extracting files' });
 
       const InfoLog = { token, appid };
-      sendErrorToDiscord(InfoLog, error);
+      sendErrorToLog(InfoLog, error);
       
       return;
   }
@@ -1267,7 +1252,7 @@ downloaderInstance.on('error', async (error) => {
         console.error(`Error removing download data for AppId ${appid} from the database:`, error);
 
         const InfoLog = { vida_id, appid };
-        await sendErrorToDiscord(InfoLog, error);
+        await sendErrorToLog(InfoLog, error);
       
       }
 
@@ -1308,7 +1293,7 @@ downloaderInstance.on('error', async (error) => {
   event.reply('download-error', { appid, error: 'Error processing manifest' });
 
   const InfoLog = { token, appid };
-  await sendErrorToDiscord(InfoLog, error);
+  await sendErrorToLog(InfoLog, error);
 
 }
 });
@@ -1334,7 +1319,7 @@ ipcMain.on('get-download-url', async (event, gameData) => {
     event.reply('download-error', { appid, error: 'Error fetching download URLs' });
 
     const InfoLog = { appid, manifesturl };
-    await sendErrorToDiscord(InfoLog, error);
+    await sendErrorToLog(InfoLog, error);
   
   }
 });
@@ -1467,7 +1452,7 @@ async function downloadSingleFile(event, file, downloadurl, appid, manifesturl, 
     downloaderInstance.on('error', (error) => {
       console.error(`Download error for file ${file.name}:`, error);
       const InfoLog = { token, appid };
-      sendErrorToDiscord(InfoLog, error);
+      sendErrorToLog(InfoLog, error);
     
       reject(error);
     });
@@ -1556,7 +1541,7 @@ async function downloadSingleFile(event, file, downloadurl, appid, manifesturl, 
         console.error(`Error removing download data for AppId ${appid} from the database:`, error);
 
         const InfoLog = { vida_id, appid };
-        await sendErrorToDiscord(InfoLog, error);
+        await sendErrorToLog(InfoLog, error);
       
       }
 
@@ -1582,7 +1567,7 @@ async function downloadSingleFile(event, file, downloadurl, appid, manifesturl, 
                 event.reply('download-error', { appid, error: `Error extracting ${file.name}` });
 
                 const InfoLog = { token, appid };
-                sendErrorToDiscord(InfoLog, err);
+                sendErrorToLog(InfoLog, err);
                 
                 return;
             }
@@ -1594,7 +1579,7 @@ async function downloadSingleFile(event, file, downloadurl, appid, manifesturl, 
                     console.error(`Error deleting ${zipFilePath}:`, err);
 
                     const InfoLog = { token, appid };
-                    sendErrorToDiscord(InfoLog, err);
+                    sendErrorToLog(InfoLog, err);
                 } else {
                     console.log(`Deleted ${zipFilePath} after extraction.`);
                 }
@@ -1606,7 +1591,7 @@ async function downloadSingleFile(event, file, downloadurl, appid, manifesturl, 
         console.error('Error extracting files:', error);
         event.reply('download-error', { appid, error: 'Error extracting files' });
         const InfoLog = { token, appid };
-        await sendErrorToDiscord(InfoLog, error);      
+        await sendErrorToLog(InfoLog, error);      
         return;
     }
 
@@ -1693,7 +1678,7 @@ async function downloadUpdateFile(event, update_files, downloadurl, appid, manif
       downloaderInstance.on('error', (error) => {
         console.error(`Download error for file ${file.name}:`, error);
         const InfoLog = { vida_id, appid };
-        sendErrorToDiscord(InfoLog, error);
+        sendErrorToLog(InfoLog, error);
         reject(error);
       });
 
@@ -1814,7 +1799,7 @@ async function downloadUpdateFile(event, update_files, downloadurl, appid, manif
               event.reply('download-error', { appid, error: 'Error extracting files' }); 
 
               const InfoLog = { vida_id, appid };
-              sendErrorToDiscord(InfoLog, error);
+              sendErrorToLog(InfoLog, error);
               
               return;
           }
@@ -1903,7 +1888,7 @@ async function downloadCrackFile(event, file, downloadurl, appid, manifesturl, d
       console.error(`Download error for file ${file.name}:`, error);
 
       const InfoLog = { vida_id, appid };
-      sendErrorToDiscord(InfoLog, error);
+      sendErrorToLog(InfoLog, error);
     
       reject(error);
     });
@@ -1992,7 +1977,7 @@ async function downloadCrackFile(event, file, downloadurl, appid, manifesturl, d
         console.error(`Error removing download data for AppId ${appid} from the database:`, error);
 
         const InfoLog = { vida_id, appid };
-        await sendErrorToDiscord(InfoLog, error);
+        await sendErrorToLog(InfoLog, error);
       
       }
 
@@ -2018,7 +2003,7 @@ async function downloadCrackFile(event, file, downloadurl, appid, manifesturl, d
                 event.reply('download-error', { appid, error: `Error extracting ${file.name}` });
 
                 const InfoLog = { vida_id, appid };
-                sendErrorToDiscord(InfoLog, err);
+                sendErrorToLog(InfoLog, err);
                 
                 return;
             }
@@ -2030,7 +2015,7 @@ async function downloadCrackFile(event, file, downloadurl, appid, manifesturl, d
                     console.error(`Error deleting ${zipFilePath}:`, err);
 
                     const InfoLog = { vida_id, appid };
-                    sendErrorToDiscord(InfoLog, err);
+                    sendErrorToLog(InfoLog, err);
                 } else {
                     console.log(`Deleted ${zipFilePath} after extraction.`);
                 }
@@ -2042,7 +2027,7 @@ async function downloadCrackFile(event, file, downloadurl, appid, manifesturl, d
         console.error('Error extracting files:', error);
         event.reply('download-error', { appid, error: 'Error extracting files' });
         const InfoLog = { vida_id, appid };
-        await sendErrorToDiscord(InfoLog, error);      
+        await sendErrorToLog(InfoLog, error);      
         return;
     }
 
@@ -2084,7 +2069,7 @@ ipcMain.on('download-complete', (event, appid) => {
 ipcMain.on('download-error', (event, appid, error) => {
   console.error(`Download for AppId ${appid} error:`, error);
   const InfoLog = { appid };
-  sendErrorToDiscord(InfoLog, error);
+  sendErrorToLog(InfoLog, error);
 
 });
 
