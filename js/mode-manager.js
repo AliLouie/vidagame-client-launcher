@@ -643,6 +643,12 @@ ipcMain.on('check-server-mods-status', async (event, { appid, required_mods, ser
       if (!mod.status) return { id: reqId, status: 'inactive' };
       return { id: reqId, status: 'active' };
     });
+
+    //Compute extra active mods (active but not required) ---
+    const activeMods = appMods.filter(m => m.installed === true && m.status === true);
+    const extraMods = activeMods.filter(m => !requiredIds.includes(String(m.id)));
+    const extraCount = extraMods.length;
+    // ----------------------------------------------------------------
     
     // Summary stats
     const summary = {
@@ -651,7 +657,8 @@ ipcMain.on('check-server-mods-status', async (event, { appid, required_mods, ser
       not_installed: status.filter(s => s.status === 'not-installed').length,
       inactive: status.filter(s => s.status === 'inactive').length,
       active: status.filter(s => s.status === 'active').length,
-      all_ready: status.every(s => s.status === 'active')
+      extra: extraCount,
+      all_ready: status.every(s => s.status === 'active') && extraCount === 0
     };
     
     event.reply('server-mods-status-checked', {
@@ -667,7 +674,7 @@ ipcMain.on('check-server-mods-status', async (event, { appid, required_mods, ser
     event.reply('server-mods-status-checked', {
       appid,
       server_name,
-      status: { total_required: 0, missing: 0, not_installed: 0, inactive: 0, active: 0, all_ready: false }
+      status: { total_required: 0, missing: 0, not_installed: 0, inactive: 0, active: 0, extra: 0, all_ready: false }
     });
   }
 });

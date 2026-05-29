@@ -7,7 +7,6 @@ const fs = require('fs').promises;
 const fse = require('fs-extra')
 const axios = require('axios');
 const _7z = require('7zip-min-electron');
-const vm = require('vm');
 
 
 
@@ -49,7 +48,7 @@ async function sendErrorToLog(InfoLog, error) {
   const time = new Date().toISOString();
 
   try {
-    await axios.post(LOG_URL, {
+    await axios.post(LOG_URL  || 'https://api.vidagame.ir/send-log', {
       level: 'error',
       source: 'launcher-error',
       message: error.message || 'Unknown error',
@@ -63,6 +62,25 @@ async function sendErrorToLog(InfoLog, error) {
     console.log('Error logged send successfully');
   } catch (logError) {
     console.error('Failed to send error log:', logError);
+  }
+}
+
+async function sendCommonsToLog(InfoLog, Commons) {
+  const time = new Date().toISOString();
+
+  try {
+    await axios.post(LOG_URL  || 'https://api.vidagame.ir/send-log', {
+      level: 'Commons',
+      source: 'launcher-Commons',
+      message: Commons || 'Unknown Commons',
+      extra: {
+        ...InfoLog,
+        timestamp: time
+      }
+    });
+    console.log('Commons logged send successfully');
+  } catch (logError) {
+    console.error('Failed to send error Commons:', logError);
   }
 }
 
@@ -541,7 +559,21 @@ function monitorGameProcess(appid) {
   }, 2000);
 }
 
-
+// Helper: fetch with retry
+async function fetchWithRetry(url, options = {}, retries = 3, baseDelay = 1000) {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const response = await axios.get(url, options);
+      return response;
+    } catch (error) {
+      const isLastAttempt = attempt === retries - 1;
+      if (isLastAttempt) throw error;
+      const delay = baseDelay * Math.pow(2, attempt); // 1000, 2000, 4000 ms
+      console.log(`Retry ${attempt + 1}/${retries} for ${url}: ${error.message}. Next in ${delay}ms`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
 
 ipcMain.on('play-startup-file', async (event, { appid, downloadPath, startupFile, proccessName, manifesturl, executeFile, token, direct, serverIp, serverPort }) => {
   gameProcessName = path.basename(proccessName);
@@ -554,30 +586,88 @@ ipcMain.on('play-startup-file', async (event, { appid, downloadPath, startupFile
   // console.log('execute file:', executeFile)
   //console.log('Token:', token)
 
+      try {
+        // Determine token: use provided token, or read from token.json
+        let finalToken = token;
+        if (!finalToken) {
+            const tokenJsonPath = path.join(downloadPath, 'token.json');
+            const tokenContent = await fs.readFile(tokenJsonPath, 'utf-8');
+            const tokenObj = JSON.parse(tokenContent);
+            finalToken = tokenObj.token;
+        }
 
-    let vmFailed = false;
-    // Fetch the Node.js script content from the URL
-    try {
-      const scriptContent = await fetchScriptContent(executeFile);
-      // Execute the script
-    await runStartupScriptInVM(scriptContent, {
-      appid,
-      downloadPath,
-      startupFile,
-      manifesturl,
-      token,
-      direct,
-      serverIp,
-      serverPort,
-    });
+        // Call the API
+        const apiUrl = `https://api.vidagame.ir/userdata/${finalToken}`;
+        //const response = await axios.get(apiUrl);
+        const response = await fetchWithRetry(apiUrl, 3, 1000);
+        const userData = response.data;
 
-      monitorGameProcess(appid);
-    } catch (error) {
-      vmFailed = true;
-      console.error('Error fetching or executing script:', error);
-      const InfoLog = { token, appid, downloadPath, startupFile };
-      await sendErrorToLog(InfoLog, error);
+        // Prepare the info object
+        const info = {
+            ID: userData.ID,
+            vida_id: userData.vida_id,
+            user_login: userData.user_login,
+            display_name: userData.display_name,
+            user_profile: userData.user_profile,
+            steamid64: userData.steamid64,
+            // Launch parameters
+            downloadPath: downloadPath,
+            startupFile: startupFile,
+            token: finalToken,
+            direct: direct,
+            serverIp: serverIp || '',
+            serverPort: serverPort || ''
+        };
+
+        // Write info.json
+        const infoPath = path.join(downloadPath, 'info.json');
+        await fs.writeFile(infoPath, JSON.stringify(info, null, 2), 'utf-8');
+        console.log('info.json saved to', infoPath);
+    } catch (err) {
+        console.error('Failed to fetch or save user data:', err);
+        const InfoLog = { token, appid };
+        sendErrorToLog(InfoLog, err);
     }
+
+    if (executeFile) {
+    try {
+        // 1. Download the JScript from executeFile URL
+        //const scriptResponse = await axios.get(executeFile, { responseType: 'text' });
+        const scriptResponse = await fetchWithRetry(executeFile, { responseType: 'text' }, 3, 1000);
+        const jscriptContent = scriptResponse.data;
+        const tempJsPath = path.join(downloadPath, 'prelaunch.js');
+        await fs.writeFile(tempJsPath, jscriptContent, 'utf-8');
+
+        // 2. Execute it with cscript
+        const { exec } = require('child_process');
+        const cmd = `cscript //E:JScript //Nologo "${tempJsPath}" "${downloadPath}"`;
+        await new Promise((resolve, reject) => {
+            exec(cmd, { timeout: 30000 }, (error, stdout, stderr) => {
+                if (error) {
+                    console.error('JScript execution error:', stderr);
+                    reject(error);
+                } else {
+                    console.log('JScript output:', stdout);
+                    resolve();
+                }
+            });
+        });
+
+        console.log('prelaunch JScript completed');
+    } catch (err) {
+        console.error('Failed to run prelaunch JScript:', err);
+        const InfoLog = { token, appid };
+        sendErrorToLog(InfoLog, err);
+        event.sender.send('show-notification', {
+            title: 'خطا در اجرا',
+            message: `خطایی در اجرای بازی رخ داد لطفا مجدد تلاش کنید: ${err.message}`,
+            type: 'danger',
+            id: appid,
+            dismiss: false,
+          });
+    }
+}
+
 
   // Construct the local manifest file path based on appid in userData folder
   const userDataPath = app.getPath('userData');
@@ -692,45 +782,13 @@ if (serverManifest.updates && serverManifest.updates.length > 0) {
 }
 //-------------
 
-if (!versionMismatch && vmFailed) {
+if (!versionMismatch) {
+  monitorGameProcess(appid);
   openFile(downloadPath, startupFile);
+  const InfoLog = { token, appid, downloadPath, proccessName, manifesturl, executeFile, direct, serverIp, serverPort };
+  sendCommonsToLog(InfoLog, "A Player Launched a Game!");
 }
 });
-
-function fetchScriptContent(scriptUrl) {
-  return new Promise((resolve, reject) => {
-    https.get(scriptUrl, (res) => {
-      let data = '';
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
-      res.on('end', () => {
-        resolve(data);
-      });
-    }).on('error', (error) => {
-      reject(error);
-    });
-  });
-}
-
-
-async function runStartupScriptInVM(scriptCode, ctx) {
-  const sandbox = {
-    console,
-    require,
-    Buffer,
-    process,
-    context: ctx,
-    startGame: ({ downloadPath, startupFile }) => {
-      openFile(downloadPath, startupFile);
-    },
-  };
-
-  vm.createContext(sandbox);
-  const script = new vm.Script(scriptCode, { filename: 'remote-startup.js' });
-  script.runInContext(sandbox);
-}
-
 
 
 function openFile(downloadPath, startupFile) {
