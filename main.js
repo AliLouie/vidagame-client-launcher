@@ -71,7 +71,7 @@ function createWindow() {
   
           if (token) {
             // Send token to vidagame api
-            console.log('Token added to local storage:', token);
+            console.log('Your Token:', token);
             event.reply('token-checked', token);
           }
          else {

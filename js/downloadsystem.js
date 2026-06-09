@@ -7,7 +7,15 @@ const fs = require('fs').promises;
 const fse = require('fs-extra')
 const axios = require('axios');
 const _7z = require('7zip-min-electron');
+const DownloadQueueManager = require('./queueManager');
 
+let queueManager;
+app.whenReady().then(() => {
+  queueManager = new DownloadQueueManager();
+  global.queueManager = queueManager; // so other modules can access it
+  // Start processing any pending queue on startup
+  queueManager.processQueue();
+});
 
 
 let mainWindow;
@@ -85,6 +93,206 @@ async function sendCommonsToLog(InfoLog, Commons) {
 }
 
 
+
+
+async function startGameDownload({ gameData, onProgress, onComplete, onError, onInstallStart, getDownloader }) {
+  const { appid, downloadurl, manifesturl, vida_id, downloadType = 'compress', updateFiles } = gameData;
+  console.log(`[startGameDownload] Starting ${appid} — type: ${downloadType}`);
+
+  const startLog = { appid, downloadType, downloadurl, manifesturl, vida_id, updateFiles };
+  sendCommonsToLog(startLog, `Download started: ${downloadType} for app ${appid}`);
+
+  const userDataPath = app.getPath('userData');
+  const gamesPathFilePath = path.join(userDataPath, 'games-path.json');
+
+  try {
+    // 1. Fetch manifest with retry
+    let manifest;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const manifestRes = await axios.get(manifesturl, { timeout: 30000 });
+        manifest = manifestRes.data;
+        sendCommonsToLog({ appid, vida_id, manifesturl, attempt: attempt + 1 }, `Manifest fetched successfully for ${appid}`);
+        break;
+      } catch (err) {
+        if (attempt === 2) throw err;
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        sendCommonsToLog({ appid, vida_id, manifesturl, attempt: attempt + 1, error: err.message }, `Manifest fetch retry ${attempt + 1} for ${appid}`);
+      }
+    }
+
+    // 2. Save manifest locally (compress only — first install)
+    if (downloadType === 'compress') {
+      const dgamesFolder = path.join(userDataPath, 'dgames');
+      await fs.mkdir(dgamesFolder, { recursive: true });
+      const manifestSavePath = path.join(dgamesFolder, `manifest_${appid}.json`);
+      const manifestToSave = { ...manifest, updates: [] };
+      await fs.writeFile(manifestSavePath, JSON.stringify(manifestToSave, null, 2));
+      sendCommonsToLog({ appid, vida_id, manifestSavePath }, `Manifest saved locally for ${appid}`);
+    }
+
+    // 3. Pick the files list based on downloadType
+    let filesToDownload;
+    if (downloadType === 'crack') {
+      filesToDownload = manifest.crack;
+      if (!filesToDownload || filesToDownload.length === 0)
+        throw new Error('No crack files found in manifest');
+        sendCommonsToLog({ appid, vida_id, crackFilesCount: filesToDownload.length }, `Crack files identified for ${appid}`);
+    } else if (downloadType === 'update') {
+      // updateFiles may be a specific subset; otherwise download all updates
+      if (updateFiles && updateFiles.length > 0) {
+        filesToDownload = manifest.updates.filter(f => updateFiles.includes(f.name));
+      } else {
+        filesToDownload = manifest.updates;
+      }
+      if (!filesToDownload || filesToDownload.length === 0)
+        throw new Error('No update files found in manifest');
+        sendCommonsToLog({ appid, vida_id, updateFilesCount: filesToDownload.length, specificUpdates: updateFiles }, `Update files identified for ${appid}`);
+    } else {
+      filesToDownload = manifest.compress;
+      if (!filesToDownload || filesToDownload.length === 0)
+        throw new Error('No compress files found in manifest');
+        sendCommonsToLog({ appid, vida_id, compressFilesCount: filesToDownload.length }, `Compress files identified for ${appid}`);
+    }
+
+    // 4. Get destination folder
+    const gamesPathContent = await fs.readFile(gamesPathFilePath, 'utf-8');
+    const gamesPathConfig = JSON.parse(gamesPathContent);
+    const destinationFolder = gamesPathConfig[appid]?.downloadPath;
+    if (!destinationFolder) throw new Error('Download destination not found');
+    sendCommonsToLog({ appid, vida_id, destinationFolder }, `Destination folder located for ${appid}`);
+
+    // 5. Create required sub-folders (compress only)
+    if (downloadType === 'compress' && manifest.folders) {
+      for (const folder of manifest.folders) {
+        await fs.mkdir(path.join(destinationFolder, folder), { recursive: true });
+      }
+      sendCommonsToLog({ appid, vida_id, folders: manifest.folders }, `Sub-folders created for ${appid}`);
+    }
+
+    // 6. Download
+    const fileProgress = {};
+    const totalSize = filesToDownload.reduce((acc, f) => acc + (f.size || 0), 0);
+    let completedFiles = 0;
+    let hasErrors = false;
+
+    sendCommonsToLog({ appid, vida_id, totalSize, filesCount: filesToDownload.length }, `Starting download of ${filesToDownload.length} files for ${appid}`);
+
+    for (const file of filesToDownload) {
+      const fileUrl = `${downloadurl}/${file.name}`;
+      const downloader = new DownloaderHelper(fileUrl, destinationFolder, {
+        fileName: file.name,
+        forceResume: true,
+        resumeIfFileExists: true,
+        removeOnFail: false,
+        override: false,
+        retry: { maxRetries: 5, delay: 5000 },
+        timeout: 120000,
+      });
+
+      if (getDownloader) getDownloader(downloader);
+
+      downloader.on('progress', (stats) => {
+        fileProgress[file.name] = { downloaded: stats.downloaded, total: stats.total };
+        const overallDownloaded = Object.values(fileProgress).reduce((a, b) => a + b.downloaded, 0);
+        const progress = Math.floor((overallDownloaded / totalSize) * 100);
+        const speed = stats.speed;
+        const remaining = totalSize - overallDownloaded;
+        const etaSec = speed > 0 ? Math.ceil(remaining / speed) : 0;
+        const hours = Math.floor(etaSec / 3600);
+        const minutes = Math.floor((etaSec % 3600) / 60);
+        const seconds = etaSec % 60;
+        onProgress({
+          appid,
+          progress,
+          speed: formatBytes(speed),
+          downloaded: formatBytes(overallDownloaded),
+          totalSize: formatBytes(totalSize),
+          estimatedTimeLeft: `${hours}h ${minutes}m ${seconds}s`,
+          fileName: file.name,
+          downloadType,
+        });
+      });
+
+      downloader.on('error', (err) => {
+        hasErrors = true;
+        sendCommonsToLog({ appid, vida_id, fileName: file.name, error: err.message, downloadType }, `Download error for file ${file.name} of ${appid}`);
+        onError(err);
+      });
+
+      downloader.on('end', async () => {
+        if (hasErrors) return;
+        console.log(`Downloaded ${file.name} for ${appid} [${downloadType}]`);
+        sendCommonsToLog({ appid, vida_id, fileName: file.name, downloadType }, `File ${file.name} downloaded successfully for ${appid}`);
+        completedFiles++;
+
+        if (completedFiles === filesToDownload.length) {
+          sendCommonsToLog({ appid, vida_id, downloadType }, `All files downloaded for ${appid}, starting extraction`);
+          onInstallStart({ appid, downloadType });
+          try {
+            // Extract all downloaded files
+            for (const f of filesToDownload) {
+              const zipPath = path.join(destinationFolder, f.name);
+              if (await fs.access(zipPath).then(() => true).catch(() => false)) {
+                await new Promise((resolve, reject) => {
+                  _7z.unpack(zipPath, destinationFolder, (err) => {
+                    if (err) { reject(err); return; }
+                    fs.unlink(zipPath).catch(console.error);
+                    resolve();
+                  });
+                });
+                sendCommonsToLog({ appid, vida_id, fileName: f.name }, `Extracted ${f.name} for ${appid}`);
+              }
+            }
+
+            // Update local state after extraction
+            if (downloadType === 'update') {
+              // Stamp the installed update versions into the local manifest
+              const localManifestPath = path.join(userDataPath, 'dgames', `manifest_${appid}.json`);
+              try {
+                const raw = await fs.readFile(localManifestPath, 'utf-8');
+                const localManifest = JSON.parse(raw);
+                if (!localManifest.updates) localManifest.updates = [];
+                for (const f of filesToDownload) {
+                  const serverFile = manifest.updates.find(u => u.name === f.name);
+                  if (serverFile) {
+                    const idx = localManifest.updates.findIndex(u => u.name === f.name);
+                    if (idx >= 0) localManifest.updates[idx] = serverFile;
+                    else localManifest.updates.push(serverFile);
+                  }
+                }
+                await fs.writeFile(localManifestPath, JSON.stringify(localManifest, null, 2));
+                sendCommonsToLog({ appid, vida_id }, `Local manifest updated after update installation for ${appid}`);
+              } catch (e) {
+                console.error('Could not update local manifest after update install:', e);
+                sendCommonsToLog({ appid, vida_id, error: e.message }, `Failed to update local manifest after update for ${appid}`);
+              }
+            }
+
+            savePathToJson(destinationFolder, appid, true, true);
+            broadcastToAll('game-installed', { appid, downloadType });
+            sendCommonsToLog({ appid, vida_id, downloadType, destinationFolder }, `Game installation completed for ${appid} (${downloadType})`);
+            onComplete();
+          } catch (err) {
+            onError(err);
+            sendCommonsToLog({ appid, downloadType, vida_id, error: err.message }, `Extraction failed for ${appid} (${downloadType})`);
+          }
+        }
+      });
+
+      await downloader.start();
+    }
+  } catch (err) {
+    console.error(`Download failed for ${appid} [${downloadType}]:`, err);
+    sendCommonsToLog({ appid, vida_id, downloadType, error: err.message, stack: err.stack }, `Fatal error in download process for ${appid} (${downloadType})`);
+    onError(err);
+  }
+}
+
+// Export the function so it can be used by queueManager
+module.exports = { startGameDownload };
+
+
 let downloadPath = ''; // Declare downloadPath globally
 let dl;
 let currentDownloads = {};
@@ -119,7 +327,7 @@ ipcMain.on('download-file', (event, args) => {
     getPathWindow.close();
 
     if (selectedPath) {
-      const { url, properties, appid, name, image, token, vida_id } = args;
+      const { url, manifesturl, properties, appid, name, image, token, vida_id } = args;
 
       //console.log('Received Token:', token, vida_id);
 
@@ -133,25 +341,30 @@ ipcMain.on('download-file', (event, args) => {
 
       savePathToJson(downloadPath, appid, false);
 
-      const addAppIdUrl = 'https://api.vidagame.ir/addappid';
-      const requestBody = {
-      vida_id: vida_id,
-      appid: appid,
-      updating: "0",
-      update_files: null,
-      is_Crack: "0",
-    };
+      // No longer calling addappid API - removed as requested
 
-    try {
-      await axios.post(addAppIdUrl, requestBody);
-      console.log(`AppId ${appid} added successfully via API.`);
-    } catch (error) {
-      console.error(`Error adding AppId ${appid} via API:`, error);
-      
-      const InfoLog = { addAppIdUrl, requestBody, downloadPath };
-      await sendErrorToLog(InfoLog, error);
-    }
+      // Prepare game data for queue
+      const gameQueueItem = {
+        appid,
+        name,
+        image,
+        token,
+        vida_id,
+        downloadurl: url,
+        manifesturl: manifesturl, // adjust as needed
+        updating: 0,
+        is_Crack: 0,
+      };
 
+      await queueManager.addToQueue(gameQueueItem);
+
+      const mainWin = BrowserWindow.getFocusedWindow();
+        if (mainWin && !mainWin.isDestroyed()) {
+          mainWin.webContents.send('download-queued', { appid, name });
+        }
+
+       openDownloadManagerWindow();
+       
       
       const currentWindow = BrowserWindow.getFocusedWindow();
       if (currentWindow) {
@@ -160,7 +373,7 @@ ipcMain.on('download-file', (event, args) => {
 
     new Notification({
       title: 'دانلود منیجر ویدا گیم',
-      body: 'برای شروع به بخش دانلود بروید'
+      body: 'برای مشاهده به بخش دانلود بروید'
     }).show()
 
 
@@ -168,74 +381,43 @@ ipcMain.on('download-file', (event, args) => {
   });
 });
 
+// At the top
+const { openDownloadManagerWindow, broadcastToAll } = require('./downloadManagerWindow');
+
+// After app is ready, register the IPC handler
+ipcMain.on('open-download-manager', () => {
+  openDownloadManagerWindow();
+});
+
 //--------- Update game system
 
 ipcMain.on('update-file', async (event, args) => {
 
-      const { appid, token, downloadPath, startupFile, vida_id } = args;
-      const filePath = path.join(downloadPath, startupFile);
+  const { appid, token, vida_id, manifesturl, downloadurl, updateFiles, image, name } = args;
 
-      console.log('Open file:', filePath);
-      //console.log('Received Token:', token);
-      console.log('Received vidaid:', vida_id);
-      console.log('Received appid:', appid);
+  console.log('Received vidaid:', vida_id);
+  console.log('Received appid:', appid);
 
-      savePathToJson(downloadPath, appid, false, false);
+  // Queue the update download through the download manager
+  const gameQueueItem = {
+    appid,
+    name: args.name || `Update - ${appid} - ${name}`,
+    image: image || '',
+    token,
+    vida_id,
+    downloadurl,
+    manifesturl,
+    downloadType: 'update',           // ← tells startGameDownload to use manifest.updates[]
+    updateFiles: updateFiles || [],   // optional: specific update file names to download
+  };
 
-      
-  // Read the update-files.json file
-  const updateFilesPath = path.join(userDataPath, `update-files_${appid}.json`);
-  let updateFiles = []; // Initialize updateFiles as an empty array
+  await queueManager.addToQueue(gameQueueItem);
+  openDownloadManagerWindow();
 
-  try {
-    // Check if the file exists
-    await fs.access(updateFilesPath, fs.constants.F_OK);
-
-    // File exists, read the content
-    const updateFilesContent = await fs.readFile(updateFilesPath, 'utf-8');
-    updateFiles = JSON.parse(updateFilesContent);
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      console.error('update-files.json not found, proceeding with null update_files.');
-      // If the file does not exist, we will set update_files to null
-    } else {
-      console.error('Error checking or reading update-files.json:', error);
-      const InfoLog = { vida_id, appid };
-      sendErrorToLog(InfoLog, error);
-      return;
-      // Handle other errors as needed but still proceed
-    }
+  const currentWindow = BrowserWindow.getFocusedWindow();
+  if (currentWindow) {
+    currentWindow.webContents.send('download-queued', { appid });
   }
-
-      // Set update_files to NULL if there are no update files
-      const update_files = updateFiles.length > 0 ? [updateFiles[0].name] : null;
-
-      const addAppIdUrl = 'https://api.vidagame.ir/addappid';
-      const requestBody = {
-      vida_id: vida_id,
-      appid: appid,
-      updating: "1",
-      update_files: update_files,
-      is_Crack: "0",
-    };
-
-
-    try {
-      await axios.post(addAppIdUrl, requestBody);
-      console.log(`AppId ${appid} added successfully via API.`);
-    } catch (error) {
-      console.error(`Error adding AppId ${appid} via API:`, error);
-
-      const InfoLog = { addAppIdUrl, requestBody, downloadPath };
-      await sendErrorToLog(InfoLog, error);
-    }
-
-      
-      const currentWindow = BrowserWindow.getFocusedWindow();
-      if (currentWindow) {
-        currentWindow.reload();
-      }
-
 });
 
 //---------
@@ -243,40 +425,29 @@ ipcMain.on('update-file', async (event, args) => {
 // -------- Install Crack System:
 ipcMain.on('install-crack-file', async (event, args) => {
 
-  const { appid, vida_id, downloadPath, startupFile } = args;
-  const filePath = path.join(downloadPath, startupFile);
+  const { appid, vida_id, downloadPath, manifesturl, downloadurl, image, name } = args;
 
-  console.log('Open file:', filePath);
   console.log('Received vida id:', vida_id);
   console.log('Received appid:', appid);
 
-  savePathToJson(downloadPath, appid, false, true);
+  // Queue the crack download through the download manager
+  const gameQueueItem = {
+    appid,
+    name: args.name || `Crack - ${appid} - ${name}`,
+    image: image || '',
+    vida_id,
+    downloadurl,
+    manifesturl,
+    downloadType: 'crack',   // ← tells startGameDownload to use manifest.crack[]
+  };
 
-  const addAppIdUrl = 'https://api.vidagame.ir/addappid';
-  const requestBody = {
-  vida_id: vida_id,
-  appid: appid,
-  updating: "0",
-  update_files: null,
-  is_Crack: "1",
-};
+  await queueManager.addToQueue(gameQueueItem);
+  openDownloadManagerWindow();
 
-try {
-  await axios.post(addAppIdUrl, requestBody);
-  console.log(`AppId ${appid} added successfully via API.`);
-} catch (error) {
-  console.error(`Error adding AppId ${appid} via API:`, error);
-
-  const InfoLog = { addAppIdUrl, requestBody, downloadPath };
-  await sendErrorToLog(InfoLog, error);
-}
-
-  
   const currentWindow = BrowserWindow.getFocusedWindow();
   if (currentWindow) {
-    currentWindow.reload();
+    currentWindow.webContents.send('download-queued', { appid });
   }
-
 });
 //---------
 
@@ -325,19 +496,9 @@ ipcMain.on('repair-game', async (event, args) => {
 
   savePathToJson(downloadPath, appid, true, true);
 
-  const removeDownloadUrl = `https://api.vidagame.ir/removedownloads/${vida_id}?appid=${appid}`;
+  // No longer calling removedownloads API - removed as requested
 
-try {
-  await axios.post(removeDownloadUrl);
-  console.log(`AppId ${appid} removed from downloads`);
-} catch (error) {
-  console.error(`Error removing downloads AppId ${appid} via API:`, error);
-
-  const InfoLog = { vida_id, appid, downloadPath };
-  await sendErrorToLog(InfoLog, error);
-}
-
-try {
+  try {
   // Read the contents of the destination folder
   const files = await fs.readdir(destinationFolder);
   
@@ -820,11 +981,10 @@ ipcMain.on('delete-game-directory', async (event, { appid }) => {
 });
 
 
-ipcMain.on('delete-game', async (event, { appid, vida_id }) => {
+ipcMain.on('delete-game', async (event, { appid }) => {
   const jsonFilePath = path.join(app.getPath('userData'), 'games-path.json');
   const modsJsonFilePath = path.join(app.getPath('userData'), 'mods-path.json');
 
-  console.log('Received Vida id:', vida_id);
   try {
     const data = await fs.readFile(jsonFilePath, 'utf-8');
     const downloadedGames = JSON.parse(data);
@@ -860,26 +1020,8 @@ ipcMain.on('delete-game', async (event, { appid, vida_id }) => {
       }
       ///-------
 
-      const removeDownloadUrl = `https://api.vidagame.ir/removedownloads/${vida_id}?appid=${appid}`;
+      broadcastToAll('game-deleted', { appid });
 
-      try {
-        await axios.post(removeDownloadUrl);
-        console.log(`Download data for AppId ${appid} removed from the database`);
-      } catch (error) {
-        console.error(`Error removing download data for AppId ${appid} from the database:`, error);
-
-        const InfoLog = { vida_id, appid };
-        await sendErrorToLog(InfoLog, error);
-      }
-
-      // Reload the current window
-      const currentWindow = BrowserWindow.getFocusedWindow();
-      if (currentWindow) {
-        currentWindow.reload();
-      }
-
-      // Send a confirmation message
-      event.reply('game-deleted', { appid });
     } else {
       // Send an error message if the game path is not found
       event.reply('game-delete-error', { message: 'Game path not found.' });
@@ -888,7 +1030,7 @@ ipcMain.on('delete-game', async (event, { appid, vida_id }) => {
     console.error('Error deleting game:', error);
     event.reply('game-delete-error', { message: 'Error deleting game.' });
 
-    const InfoLog = { vida_id, appid };
+    const InfoLog = { appid };
     await sendErrorToLog(InfoLog, error);
   }
 });
@@ -922,440 +1064,17 @@ async function deleteGameDirectory(gamePath) {
 const userDataPath = app.getPath('userData');
 const gamesPathFilePath = path.join(userDataPath, 'games-path.json');
 
-// Declare a variable to hold the downloader instances
-const downloaders = {};
 
 ipcMain.on('download-game', async (event, gameData) => {
-  const { appid, downloadurl, token, vida_id, manifesturl, updating, update_files, is_Crack} = gameData;
-
-  console.log('Received download URL:', downloadurl);
-  console.log('Received download Manifest URL:', manifesturl);
-  console.log('Received AppId:', appid);
-  console.log('Received Token:', token);
-  console.log('Received vida id:', vida_id);
-  console.log('Received Updating:', updating);
-
-
-  const downloadStatus = {
-    progress: 0,
-    downloaded: 0,
-    totalSize: 0,
-  };
-
-
-
-  try {
-
-    if (updating === 1) {
-
-            // Read the local manifest file
-            const localManifestPath = path.join(userDataPath, 'dgames', `manifest_${appid}.json`);
-            const localManifestContent = await fs.readFile(localManifestPath, 'utf-8');
-            const localManifest = JSON.parse(localManifestContent);
-      
-            // Fetch manifest data from the server using manifesturl
-            const response = await axios.get(manifesturl);
-            const serverManifest = response.data;
-      
-            let versionMismatch = false; // Flag to track version mismatches
-            let filesToUpdate = 0;
-      
-          if (update_files && update_files.length > 0) {
-              console.log('There are update files:', update_files);
-
-                  await downloadUpdateFile(event, update_files, downloadurl, appid, manifesturl, downloadStatus, token, vida_id).then(() => {
-                  versionMismatch = true;
-                  // Continue with other logic if needed after downloading a single file
-                });
-                
-              return;
-            } else {
-
-            // Compare versions of files
-            for (const localFile of localManifest.compress) {
-              const serverFile = serverManifest.compress.find((file) => file.name === localFile.name);
-      
-              if (serverFile && serverFile.version !== localFile.version) {
-                console.error(`Version mismatch for file ${localFile.name}. Local version: ${localFile.version}, Server version: ${serverFile.version}`);
-                filesToUpdate++;
-                const totalFiles = filesToUpdate;
-                
-                // Use then to handle the asynchronous download operation
-                await downloadSingleFile(event, serverFile, downloadurl, appid, manifesturl, downloadStatus, totalFiles, token, vida_id).then(() => {
-                  versionMismatch = true;
-                  // Continue with other logic if needed after downloading a single file
-                });
-              }
-            }
-
-            serverManifest.compress.forEach( async (serverFile) => {
-              const localFile = localManifest.compress.find((file) => file.name === serverFile.name);
-      
-              if (!localFile) {
-                  console.error(`File ${serverFile.name} exists in server manifest but not in local manifest.`);
-                  filesToUpdate++;
-                  const totalFiles = filesToUpdate;
-
-                  versionMismatch = true;
-                  // Download the missing file
-                  await downloadSingleFile(event, serverFile, downloadurl, appid, manifesturl, downloadStatus, totalFiles, token, vida_id);
-              }
-          });
-          
-            console.log(`Total files to update for AppId ${appid}: ${filesToUpdate}`);
-      
-            if (versionMismatch) {
-              // If there were version mismatches, respond with a success message or any other relevant data
-              event.reply('download-complete', { appid, success: true });
-              return;
-            }
-        }
-    }
-
-    if (is_Crack === 1) {
-      console.log("Crack file is true for downloading addon files");
-  
-      try {
-          // Fetch manifest data from the server using manifesturl
-          const response = await axios.get(manifesturl);
-          const serverManifest = response.data;
-  
-          let crackCompleted = false;
-          let filesToUpdate = 0;
-  
-          // Assuming serverManifest.crack is an array of crack files
-          for (const crackFile of serverManifest.crack) {
-              filesToUpdate++;
-  
-              // Download each crack file
-              console.log(crackFile)
-              console.log(downloadurl)
-
-              await downloadCrackFile(event, crackFile, downloadurl, appid, manifesturl, downloadStatus, filesToUpdate, token, vida_id).then(() => {
-                crackCompleted = true;
-              });
-  
-          }
-  
-          // If there was no version mismatch, notify that download is complete
-          if (crackCompleted) {
-              event.reply('download-complete', { appid, success: true });
-              return;
-          }
-      } catch (error) {
-          console.error('Error downloading crack files:', error);
-          event.reply('download-complete', { appid, success: false, error: error.message });
-          event.sender.send('show-notification', {
-            title: 'خطا در اتصال',
-            message: `خطایی در دانلود کرک رخ داد لطفا مجدد تلاش کنید: ${error}`,
-            type: 'danger',
-            id: appid,
-          });
-
-          const InfoLog = { token, appid };
-          await sendErrorToLog(InfoLog, error);
-          return;
-      }
-  }
-  
-
-  // Read the manifest file content
-    const manifestFileContent = await axios.get(manifesturl);
-    const manifest = manifestFileContent.data;
-
-
-  // Save the manifest JSON file
-  const dgamesFolderPath = path.join(userDataPath, 'dgames');
-  const manifestSavePath = path.join(dgamesFolderPath, `manifest_${appid}.json`);
-
-  // Create the dgames folder if it doesn't exist
-  await fs.mkdir(dgamesFolderPath, { recursive: true });
-  
-  manifest.updates = [];
-  await fs.writeFile(manifestSavePath, JSON.stringify(manifest, null, 2), 'utf-8');
-  console.log(`Manifest file saved for AppId ${appid} at: ${manifestSavePath}`);
-
-
-    // Read the games-path.json file
-    const gamesPathFileContent = await fs.readFile(gamesPathFilePath, 'utf-8');
-    const gamesPathConfig = JSON.parse(gamesPathFileContent);
-
-    // Get the destinationFolder from the config based on the appid
-    const destinationFolder = gamesPathConfig[appid]?.downloadPath;
-
-    if (!destinationFolder) {
-      console.error(`Download destination not found for appid: ${appid}`);
-      event.reply('download-error', { appid, error: 'Download destination not found' });
-      return;
-    }
-
-    if (manifest.folders && manifest.folders.length > 0) {
-      for (const folderPath of manifest.folders) {
-        const fullFolderPath = path.join(destinationFolder, folderPath);
-
-        try {
-          await fs.access(fullFolderPath);
-        } catch (error) {
-          // Create the folder if it doesn't exist
-          await fs.mkdir(fullFolderPath, { recursive: true });
-        }
-      }
-    }
-
-
-    const fileProgress = {};
-    let totalSize = 0;
-    let totalDownloaded = 0;
-    let completedFiles = 0;
-
-
-    for (const file of manifest.compress) {
-      const fileDownloadUrl = `${downloadurl}/${file.name}`;
-
-    const downloaderInstance = new DownloaderHelper(fileDownloadUrl, destinationFolder, {
-      fileName: file.name,
-      forceResume: true,
-      resumeIfFileExists: true,
-      removeOnFail: false,
-      override: true,
-      retry: { maxRetries: 5, delay: 5000 },
-      timeout: 60000,
-
-
-      onComplete: () => {
-        console.log(`Download for AppId ${appid} of file ${file.name} completed`);
-        delete downloaders[`${appid}-${file.name}`];
-      },
-    });
-    
-
-// Subscribe to error event
-downloaderInstance.on('error', async (error) => {
-  console.error(`Download for AppId ${appid} of file ${file.name} error:`, error);
-  event.sender.send('show-notification', {
-    title: 'خطا در اتصال',
-    message: 'از اتصال اینترنت خود مطمئن شوید',
-    type: 'danger',
-    id: appid,
+  const { startGameDownload } = require('./downloadsystem');
+  startGameDownload({
+    gameData,
+    onProgress: (prog) => event.sender.send('update-progress', prog),
+    onComplete: () => event.reply('download-complete', { appid: gameData.appid }),
+    onError: (err) => event.reply('download-error', { appid: gameData.appid, error: err.message }),
+    onInstallStart: () => event.sender.send('installing-game', { appid: gameData.appid }),
   });
-
-  if (error.code === 'ETIMEDOUT' && downloaderInstance.retryCount < downloaderInstance.options.retry.maxRetries) {
-    console.log(`Retrying download (${downloaderInstance.retryCount + 1}/${downloaderInstance.options.retry.maxRetries})...`);
-
-    // Wait for a brief moment before retrying (optional)
-    await new Promise(resolve => setTimeout(resolve, downloaderInstance.options.retry.delay));
-
-    // Retry the download
-    downloaderInstance.start();
-  } else {
-    event.reply('download-error', { appid, error: 'Internal Server Error', fileName: file.name });
-  }
-
-  const InfoLog = { token, appid };
-  await sendErrorToLog(InfoLog, error);
 });
-
-
-    // Store the downloader instance in the downloaders object
-    downloaders[`${appid}-${file.name}`] = downloaderInstance;
-
-  fileProgress[file.name] = {
-    downloaded: 0,
-    total: 0,
-  };
-
-  downloaderInstance.on('progress', (stats) => {
-    fileProgress[file.name] = {
-      downloaded: stats.downloaded,
-      total: stats.total,
-    };
-
-    if (totalSize === 0) {
-      totalSize = manifest.compress.reduce((acc, file) => acc + file.size, 0);
-    }
-
-    const overallDownloaded = Object.values(fileProgress).reduce((acc, fileStats) => acc + fileStats.downloaded, 0);
-    const overallProgress = Math.floor((overallDownloaded / totalSize) * 100);
-
-  // Calculate remaining bytes and estimated time left
-  const remainingBytes = totalSize - overallDownloaded;
-  const speed = stats.speed; // speed in bytes per second
-  const estimatedTimeLeft = speed > 0 ? Math.ceil(remainingBytes / speed) : 0; // in seconds
-
-  // Convert estimated time left to hours, minutes, and seconds
-  const hours = Math.floor(estimatedTimeLeft / 3600);
-  const minutes = Math.floor((estimatedTimeLeft % 3600) / 60);
-  const seconds = estimatedTimeLeft % 60;
-
-
-    event.sender.send('update-progress', {
-      appid,
-      progress: overallProgress,
-      speed: formatBytes(stats.speed),
-      downloaded: formatBytes(overallDownloaded),
-      totalSize: formatBytes(totalSize),
-      estimatedTimeLeft: `${hours}h ${minutes}m ${seconds}s`,
-      fileName: file.name,
-    });
-  });
-
-  downloaderInstance.on('timeout', () => {
-    console.error(`Download for AppId ${appid} of file ${file.name} timed out`);
-    event.reply('download-error', { appid, error: 'Download timed out', fileName: file.name });
-
-    const InfoLog = { token, appid };
-    sendErrorToLog(InfoLog, error);
-  });
-
-  downloaderInstance.on('retry', (retryCount, maxRetries) => {
-    console.log(`Retrying download (${retryCount}/${maxRetries}) for AppId ${appid} of file ${file.name}...`);
-    event.sender.send('show-notification', {
-      title: 'خطا در اتصال',
-      message: `در حال تلاش مجدد برای گام: ${retryCount}`,
-      type: 'warning',
-      id: appid,
-    });
-  });
-  
-  
-
-  // Subscribe to end event
-  downloaderInstance.on('end', async () => {
-    console.log(`Download for AppId ${appid} completed: ${file.name}`);
-    event.reply('download-complete', { appid });
-    completedFiles++;
-
-    try {
-
-      event.sender.send('show-notification', {
-        title: 'نصب بازی',
-        message: 'بازی شما در حال نصب است لطفا تا مشاهده پیام موفقیت آمیز برنامه را نبندید و صبور باشید',
-        type: 'info',
-        id: appid,
-      });
-
-      for (const file of manifest.compress) {
-          const zipFilePath = path.join(destinationFolder, file.name);
-          const extractPath = destinationFolder;
-          await _7z.unpack(zipFilePath, extractPath, err => {
-            if (err) {
-              console.error(`Error extracting ${file.name}:`, err);
-              event.reply('download-error', { appid, error: `Error extracting ${file.name}` });
-
-              const InfoLog = { token, appid };
-              sendErrorToLog(InfoLog, err);
-              
-              return;
-          }
-            console.log(`File ${file.name} extracted successfully.`);
-            event.sender.send('remove-notification', {id: appid});
-
-            fs.unlink(zipFilePath, err => {
-              if (err) {
-                  console.error(`Error deleting ${zipFilePath}:`, err);
-
-                  const InfoLog = { token, appid };
-                  sendErrorToLog(InfoLog, err);
-              } else {
-                  console.log(`Deleted ${zipFilePath} after extraction.`);
-              }
-          });
-        });
-
-      }
-  } catch (error) {
-      console.error('Error extracting files:', error);
-      event.reply('download-error', { appid, error: 'Error extracting files' });
-
-      const InfoLog = { token, appid };
-      sendErrorToLog(InfoLog, error);
-      
-      return;
-  }
-
-    if (completedFiles === manifest.compress.length) {
-      totalDownloaded = manifest.compress.reduce((acc, file) => acc + file.size, 0);
-
-      const overallProgress = Math.floor((totalDownloaded / totalSize) * 100);
-
-      // Emit an IPC event to the renderer process with the overall progress details
-      event.sender.send('update-progress', {
-        appid,
-        progress: overallProgress,
-        speed: 'N/A',
-        downloaded: formatBytes(totalDownloaded),
-        totalSize: formatBytes(totalSize),
-        fileName: 'All Files',
-      });
-
-      // Reset the completed files count for future downloads
-      completedFiles = 0;
-
-            // Remove the downloader instance when download is complete
-      delete downloaders[`${appid}-${file.name}`];
-      savePathToJson(destinationFolder, appid, true, true);
-
-            // Make a request to remove the download data from the database
-      const removeDownloadUrl = `https://api.vidagame.ir/removedownloads/${vida_id}?appid=${appid}`;
-
-      // const currentWindow = BrowserWindow.getFocusedWindow();
-      // if (currentWindow) {
-      //   currentWindow.reload();
-      // }
-
-      try {
-        await axios.post(removeDownloadUrl);
-        console.log(`Download data for AppId ${appid} removed from the database`);
-      } catch (error) {
-        console.error(`Error removing download data for AppId ${appid} from the database:`, error);
-
-        const InfoLog = { vida_id, appid };
-        await sendErrorToLog(InfoLog, error);
-      
-      }
-
-
-    }
-  });
-
-
-  
-  ipcMain.on('stop-download', (event, stopData) => {
-    if (stopData.appid === appid) {
-      downloaderInstance.stop();
-      // Emit an IPC event to inform the renderer process that the download has been stopped
-      event.sender.send('download-stopped', { appid });
-    }
-  });
-
-  ipcMain.on('pause-download', (event, pauseData) => {
-    if (pauseData.appid === appid) {
-      downloaderInstance.pause();
-    }
-  });
-
-  ipcMain.on('resume-download', (event, resumeData) => {
-    if (resumeData.appid === appid) {
-      downloaderInstance.resume();
-    }
-  });
-
-    // Start the download
-    await downloaderInstance.start();
-  }
-
-
-  event.reply('download-complete', { appid });
-} catch (error) {
-  console.error(`Error processing manifest for AppId ${appid}:`, error);
-  event.reply('download-error', { appid, error: 'Error processing manifest' });
-
-  const InfoLog = { token, appid };
-  await sendErrorToLog(InfoLog, error);
-
-}
-});
-
 
 //----- Get url download game
 ipcMain.on('get-download-url', async (event, gameData) => {
@@ -1457,666 +1176,6 @@ ipcMain.on('install-backup', (event, args) => {
     }
   });
 });
-
-
-
-//----- Game Update System
-
-async function downloadSingleFile(event, file, downloadurl, appid, manifesturl, downloadStatus, totalFiles, token, vida_id) {
-  console.log('Received Maniwdaw:', appid);
-
-  return new Promise(async (resolve, reject) => {
-    const timestamp = Date.now();
-    const fileDownloadUrl = `${downloadurl}/${file.name}?timestamp=${timestamp}`;
-
-    // Read the games-path.json file
-    const gamesPathFileContent = await fs.readFile(gamesPathFilePath, 'utf-8');
-    const gamesPathConfig = JSON.parse(gamesPathFileContent);
-    // Get the destinationFolder from the config based on the appid
-    const destinationFolder = gamesPathConfig[appid]?.downloadPath;
-
-    //const destinationFolder = path.join(userDataPath, 'dgames');
-    const filePath = path.join(destinationFolder, file.name);
-
-    try {
-      // Remove existing file if it exists
-      await fs.unlink(filePath);
-    } catch (unlinkError) {
-      // Ignore errors if the file doesn't exist
-      if (unlinkError.code !== 'ENOENT') {
-        reject(unlinkError);
-        return;
-      }
-    }
-
-      // Read the manifest file content
-      const manifestFileContent = await axios.get(manifesturl);
-      const manifest = manifestFileContent.data;
-
-    const fileProgress = {};
-    let totalSize = 0;
-    let totalDownloaded = 0;
-    let completedFiles = 0;
-
-    const downloaderInstance = new DownloaderHelper(fileDownloadUrl, destinationFolder, {
-      fileName: file.name,
-      forceResume: true,
-      resumeIfFileExists: true,
-      removeOnFail: false,
-      override: true,
-    });
-
-    // Subscribe to error event
-    downloaderInstance.on('error', (error) => {
-      console.error(`Download error for file ${file.name}:`, error);
-      const InfoLog = { token, appid };
-      sendErrorToLog(InfoLog, error);
-    
-      reject(error);
-    });
-
-        // Store the downloader instance in the downloaders object
-    downloaders[`${appid}-${file.name}`] = downloaderInstance;
-
-  fileProgress[file.name] = {
-    downloaded: 0,
-    total: 0,
-  };
-
-  downloaderInstance.on('progress', (stats) => {
-    fileProgress[file.name] = {
-      downloaded: stats.downloaded,
-      total: stats.total,
-    };
-
-    if (totalSize === 0) {
-      totalSize = manifest.compress.reduce((acc, file) => acc + file.size, 0);
-    }
-
-    downloadStatus.progress = stats.progress;
-    downloadStatus.downloaded = stats.downloaded;
-    downloadStatus.totalSize = stats.total;
-
-    // Use downloadStatus to update progress UI
-    event.sender.send('update-progress', {
-      appid: appid,
-      progress: Math.floor(downloadStatus.progress),
-      speed: formatBytes(stats.speed),
-      downloaded: formatBytes(downloadStatus.downloaded),
-      totalSize: formatBytes(downloadStatus.totalSize),
-      fileName: file.name,
-    });
-  });
-
-    // Subscribe to end event
-    downloaderInstance.on('end', async () => {
-      console.log(`Downloaded mismatched file ${file.name} for AppId ${appid}`);
-
-      console.log(`Download for AppId ${appid} completed: ${file.name}`);
-    event.reply('download-complete', { appid });
-    completedFiles++;
-
-    if (totalFiles == completedFiles) {
-      totalDownloaded = manifest.compress.reduce((acc, file) => acc + file.size, 0);
-
-      const overallProgress = Math.floor((totalDownloaded / totalSize) * 100);
-
-      // Emit an IPC event to the renderer process with the overall progress details
-      event.sender.send('update-progress', {
-        appid,
-        progress: overallProgress,
-        speed: 'N/A',
-        downloaded: formatBytes(totalDownloaded),
-        totalSize: formatBytes(totalSize),
-        fileName: 'All Files',
-      });
-
-      // Reset the completed files count for future downloads
-      completedFiles = 0;
-
-      // Save the manifest JSON file
-  const dgamesFolderPath = path.join(userDataPath, 'dgames');
-  const manifestSavePath = path.join(dgamesFolderPath, `manifest_${appid}.json`);
-
-  // Create the dgames folder if it doesn't exist
-  await fs.mkdir(dgamesFolderPath, { recursive: true });
-
-  await fs.writeFile(manifestSavePath, JSON.stringify(manifest, null, 2), 'utf-8');
-  console.log(`Manifest file saved for AppId ${appid} at: ${manifestSavePath}`);
-
-            // Remove the downloader instance when download is complete
-      delete downloaders[`${appid}-${file.name}`];
-      savePathToJson(destinationFolder, appid, true, true);
-      
-
-            // Make a request to remove the download data from the database
-      const removeDownloadUrl = `https://api.vidagame.ir/removedownloads/${vida_id}?appid=${appid}`;
-
-      try {
-        await axios.post(removeDownloadUrl);
-        console.log(`Download data for AppId ${appid} removed from the database`);
-      } catch (error) {
-        console.error(`Error removing download data for AppId ${appid} from the database:`, error);
-
-        const InfoLog = { vida_id, appid };
-        await sendErrorToLog(InfoLog, error);
-      
-      }
-
-
-    }
-
-      // Continue with any other logic needed after downloading a single file
-      // ...
-      event.sender.send('show-notification', {
-        title: 'نصب آپدیت',
-        message: 'در حال نصب آپدیت، لطفا صبور باشید',
-        type: 'info',
-        id: appid,
-      });
-
-      try {
-        for (const file of manifest.compress) {
-            const zipFilePath = path.join(destinationFolder, file.name);
-            const extractPath = destinationFolder;
-            await _7z.unpack(zipFilePath, extractPath, err => {
-              if (err) {
-                console.error(`Error extracting ${file.name}:`, err);
-                event.reply('download-error', { appid, error: `Error extracting ${file.name}` });
-
-                const InfoLog = { token, appid };
-                sendErrorToLog(InfoLog, err);
-                
-                return;
-            }
-              console.log(`File ${file.name} extracted successfully.`);
-              event.sender.send('remove-notification', {id: appid});
-  
-              fs.unlink(zipFilePath, err => {
-                if (err) {
-                    console.error(`Error deleting ${zipFilePath}:`, err);
-
-                    const InfoLog = { token, appid };
-                    sendErrorToLog(InfoLog, err);
-                } else {
-                    console.log(`Deleted ${zipFilePath} after extraction.`);
-                }
-            });
-          });
-  
-        }
-    } catch (error) {
-        console.error('Error extracting files:', error);
-        event.reply('download-error', { appid, error: 'Error extracting files' });
-        const InfoLog = { token, appid };
-        await sendErrorToLog(InfoLog, error);      
-        return;
-    }
-
-      resolve();
-    });
-
-    ipcMain.on('stop-download', (event, stopData) => {
-      if (stopData.appid === appid) {
-        downloaderInstance.stop();
-        // Emit an IPC event to inform the renderer process that the download has been stopped
-        event.sender.send('download-stopped', { appid });
-      }
-    });
-  
-    ipcMain.on('pause-download', (event, pauseData) => {
-      if (pauseData.appid === appid) {
-        downloaderInstance.pause();
-      }
-    });
-  
-    ipcMain.on('resume-download', (event, resumeData) => {
-      if (resumeData.appid === appid) {
-        downloaderInstance.resume();
-      }
-    });
-
-    // Start the download
-    downloaderInstance.start();
-  });
-}
-
-/// Download update_files:
-async function downloadUpdateFile(event, update_files, downloadurl, appid, manifesturl, downloadStatus, token, vida_id) {
-  console.log('Received AppId:', appid);
-
-  return new Promise(async (resolve, reject) => {
-    // Read the manifest file content
-    const manifestFileContent = await axios.get(manifesturl);
-    const manifest = manifestFileContent.data;
-
-    // Filter the manifest to get only the files that need to be downloaded
-    const filesToDownload = manifest.updates.filter(file => update_files.includes(file.name));
-
-    if (filesToDownload.length === 0) {
-      console.log('No files to download.');
-      resolve(); // Nothing to download, resolve the promise
-      return;
-    }
-
-    let completedFiles = 0;
-
-    for (const file of filesToDownload) {
-      const timestamp = Date.now();
-      const fileDownloadUrl = `${downloadurl}/${file.name}?timestamp=${timestamp}`;
-
-      // Read the games-path.json file
-      const gamesPathFileContent = await fs.readFile(gamesPathFilePath, 'utf-8');
-      const gamesPathConfig = JSON.parse(gamesPathFileContent);
-      const destinationFolder = gamesPathConfig[appid]?.downloadPath;
-      const filePath = path.join(destinationFolder, file.name);
-
-      try {
-        // Remove existing file if it exists
-        await fs.unlink(filePath);
-      } catch (unlinkError) {
-        // Ignore errors if the file doesn't exist
-        if (unlinkError.code !== 'ENOENT') {
-          reject(unlinkError);
-          return;
-        }
-      }
-
-      const downloaderInstance = new DownloaderHelper(fileDownloadUrl, destinationFolder, {
-        fileName: file.name,
-        forceResume: true,
-        resumeIfFileExists: true,
-        removeOnFail: false,
-        override: true,
-        retry: { maxRetries: 5, delay: 5000 },
-        timeout: 60000,
-      });
-
-      // Subscribe to error event
-      downloaderInstance.on('error', (error) => {
-        console.error(`Download error for file ${file.name}:`, error);
-        const InfoLog = { vida_id, appid };
-        sendErrorToLog(InfoLog, error);
-        reject(error);
-      });
-
-      // Subscribe to progress event
-      downloaderInstance.on('progress', (stats) => {
-        downloadStatus.progress = stats.progress;
-        downloadStatus.downloaded = stats.downloaded;
-        downloadStatus.totalSize = stats.total;
-
-        // Use downloadStatus to update progress UI
-        event.sender.send('update-progress', {
-          appid: appid,
-          progress: Math.floor(downloadStatus.progress),
-          speed: formatBytes(stats.speed),
-          downloaded: formatBytes(downloadStatus.downloaded),
-          totalSize: formatBytes(downloadStatus.totalSize),
-          fileName: file.name,
-        });
-      });
-
-      // Subscribe to end event update files
-      downloaderInstance.on('end', async () => {
-        console.log(`Downloaded file ${file.name} for AppId ${appid}`);
-        completedFiles++;
-
-        // Check if all files have been downloaded
-        if (completedFiles === filesToDownload.length) {
-          // Update the local manifest with the new files
-          const dgamesFolderPath = path.join(userDataPath, 'dgames');
-          const localManifestPath = path.join(dgamesFolderPath, `manifest_${appid}.json`);
-
-          // Read the existing local manifest
-          let localManifestContent;
-          try {
-            localManifestContent = await fs.readFile(localManifestPath, 'utf-8');
-          } catch (error) {
-            console.error('Error reading local manifest:', error);
-            localManifestContent = JSON.stringify({ compress: [], updates: [] }); // Initialize if not found
-          }
-
-          const localManifest = JSON.parse(localManifestContent);
-
-          // Add the downloaded files to the local manifest
-          localManifest.updates.push(...filesToDownload);
-
-          // Save the updated local manifest
-          await fs.writeFile(localManifestPath, JSON.stringify(localManifest, null, 2), 'utf-8');
-          console.log(`Local manifest updated for AppId ${appid} at: ${localManifestPath}`);
-
-          const updateFilesPath = path.join(userDataPath, `update-files_${appid}.json`);
-	
-              try {
-            // Delete the update-files.json file
-            await fs.unlink(updateFilesPath);
-            console.log(`Successfully deleted update-files.json at: ${updateFilesPath}`);
-            } catch (error) {
-              if (error.code === 'ENOENT') {
-                console.error(`File not found: ${updateFilesPath}`);
-              } else {
-                console.error('Error deleting update-files.json:', error);
-              }
-            }
-
-          // Notify the completion of downloads
-          event.reply('download-complete', { appid });
-
-            // Remove the downloader instance when download is complete
-            delete downloaders[`${appid}-${file.name}`];
-
-
-            event.sender.send('show-notification', {
-              title: 'نصب آپدیت',
-              message: 'در حال نصب آپدیت، لطفا صبور باشید',
-              type: 'info',
-              id: appid,
-            });
-      
-            try {
-              for (const file of filesToDownload) {
-                  const zipFilePath = path.join(destinationFolder, file.name);
-                  const extractPath = destinationFolder;
-                  await _7z.unpack(zipFilePath, extractPath, async (err) => {
-                    if (err) {
-                      console.error(`Error extracting ${file.name}:`, err);
-                      event.reply('download-error', { appid, error: `Error extracting ${file.name}` });
-  
-                      
-                      return;
-                  }
-                    console.log(`File ${file.name} extracted successfully.`);
-                    event.sender.send('remove-notification', {id: appid});
-                    savePathToJson(destinationFolder, appid, true, true);
-
-                     // Make a request to remove the download data from the database
-                      const removeDownloadUrl = `https://api.vidagame.ir/removedownloads/${vida_id}?appid=${appid}`;
-                
-                      try {
-                        await axios.post(removeDownloadUrl);
-                        console.log(`Download data for AppId ${appid} removed from the database`);
-                      } catch (error) {
-                        console.error(`Error removing download data for AppId ${appid} from the database:`, error);
-                      
-                      }
-        
-                    fs.unlink(zipFilePath, err => {
-                      if (err) {
-                          console.error(`Error deleting ${zipFilePath}:`, err);
-
-                      } else {
-                          console.log(`Deleted ${zipFilePath} after extraction.`);
-                      }
-                  });
-                });
-        
-              }
-          } catch (error) {
-              console.error('Error extracting files:', error);
-              event.reply('download-error', { appid, error: 'Error extracting files' }); 
-
-              const InfoLog = { vida_id, appid };
-              sendErrorToLog(InfoLog, error);
-              
-              return;
-          }
-
-        }
-      });
-
-      ipcMain.on('stop-download', (event, stopData) => {
-        if (stopData.appid === appid) {
-          downloaderInstance.stop();
-          // Emit an IPC event to inform the renderer process that the download has been stopped
-          event.sender.send('download-stopped', { appid });
-        }
-      });
-    
-      ipcMain.on('pause-download', (event, pauseData) => {
-        if (pauseData.appid === appid) {
-          downloaderInstance.pause();
-        }
-      });
-    
-      ipcMain.on('resume-download', (event, resumeData) => {
-        if (resumeData.appid === appid) {
-          downloaderInstance.resume();
-        }
-      });
-  
-
-      // Start the download
-      downloaderInstance.start();
-    }
-
-    resolve(); // Resolve the promise after starting all downloads
-  });
-}
-//---------------
-
-//// Download Crack File System:
-
-async function downloadCrackFile(event, file, downloadurl, appid, manifesturl, downloadStatus, totalFiles, token, vida_id) {
-  console.log('Received ManiCrack:', appid);
-
-  return new Promise(async (resolve, reject) => {
-    const timestamp = Date.now();
-    const fileDownloadUrl = `${downloadurl}/${file.name}?timestamp=${timestamp}`;
-
-    // Read the games-path.json file
-    const gamesPathFileContent = await fs.readFile(gamesPathFilePath, 'utf-8');
-    const gamesPathConfig = JSON.parse(gamesPathFileContent);
-    // Get the destinationFolder from the config based on the appid
-    const destinationFolder = gamesPathConfig[appid]?.downloadPath;
-
-    //const destinationFolder = path.join(userDataPath, 'dgames');
-    const filePath = path.join(destinationFolder, file.name);
-
-    try {
-      // Remove existing file if it exists
-      await fs.unlink(filePath);
-    } catch (unlinkError) {
-      // Ignore errors if the file doesn't exist
-      if (unlinkError.code !== 'ENOENT') {
-        reject(unlinkError);
-        return;
-      }
-    }
-
-      // Read the manifest file content
-      const manifestFileContent = await axios.get(manifesturl);
-      const manifest = manifestFileContent.data;
-
-    const fileProgress = {};
-    let totalSize = 0;
-    let totalDownloaded = 0;
-    let completedFiles = 0;
-
-    const downloaderInstance = new DownloaderHelper(fileDownloadUrl, destinationFolder, {
-      fileName: file.name,
-      forceResume: true,
-      resumeIfFileExists: true,
-      removeOnFail: false,
-      override: true,
-    });
-
-    // Subscribe to error event
-    downloaderInstance.on('error', (error) => {
-      console.error(`Download error for file ${file.name}:`, error);
-
-      const InfoLog = { vida_id, appid };
-      sendErrorToLog(InfoLog, error);
-    
-      reject(error);
-    });
-
-        // Store the downloader instance in the downloaders object
-    downloaders[`${appid}-${file.name}`] = downloaderInstance;
-
-  fileProgress[file.name] = {
-    downloaded: 0,
-    total: 0,
-  };
-
-  downloaderInstance.on('progress', (stats) => {
-    fileProgress[file.name] = {
-      downloaded: stats.downloaded,
-      total: stats.total,
-    };
-
-    if (totalSize === 0) {
-      totalSize = manifest.crack.reduce((acc, file) => acc + file.size, 0);
-    }
-
-    downloadStatus.progress = stats.progress;
-    downloadStatus.downloaded = stats.downloaded;
-    downloadStatus.totalSize = stats.total;
-
-    // Use downloadStatus to update progress UI
-    event.sender.send('update-progress', {
-      appid: appid,
-      progress: Math.floor(downloadStatus.progress),
-      speed: formatBytes(stats.speed),
-      downloaded: formatBytes(downloadStatus.downloaded),
-      totalSize: formatBytes(downloadStatus.totalSize),
-      fileName: file.name,
-    });
-  });
-
-    // Subscribe to end event
-    downloaderInstance.on('end', async () => {
-      console.log(`Downloaded mismatched file ${file.name} for AppId ${appid}`);
-
-      console.log(`Download for AppId ${appid} completed: ${file.name}`);
-    event.reply('download-complete', { appid });
-    completedFiles++;
-
-    if (totalFiles == completedFiles) {
-      totalDownloaded = manifest.crack.reduce((acc, file) => acc + file.size, 0);
-
-      const overallProgress = Math.floor((totalDownloaded / totalSize) * 100);
-
-      // Emit an IPC event to the renderer process with the overall progress details
-      event.sender.send('update-progress', {
-        appid,
-        progress: overallProgress,
-        speed: 'N/A',
-        downloaded: formatBytes(totalDownloaded),
-        totalSize: formatBytes(totalSize),
-        fileName: 'All Files',
-      });
-
-      // Reset the completed files count for future downloads
-      completedFiles = 0;
-
-      // Save the manifest JSON file
-  const dgamesFolderPath = path.join(userDataPath, 'dgames');
-  const manifestSavePath = path.join(dgamesFolderPath, `manifest_${appid}.json`);
-
-  // Create the dgames folder if it doesn't exist
-  await fs.mkdir(dgamesFolderPath, { recursive: true });
-
-  await fs.writeFile(manifestSavePath, JSON.stringify(manifest, null, 2), 'utf-8');
-  console.log(`Manifest file saved for AppId ${appid} at: ${manifestSavePath}`);
-
-            // Remove the downloader instance when download is complete
-      delete downloaders[`${appid}-${file.name}`];
-      savePathToJson(destinationFolder, appid, true, true);
-      
-
-            // Make a request to remove the download data from the database
-      const removeDownloadUrl = `https://api.vidagame.ir/removedownloads/${vida_id}?appid=${appid}`;
-
-      try {
-        await axios.post(removeDownloadUrl);
-        console.log(`Download data for AppId ${appid} removed from the database`);
-      } catch (error) {
-        console.error(`Error removing download data for AppId ${appid} from the database:`, error);
-
-        const InfoLog = { vida_id, appid };
-        await sendErrorToLog(InfoLog, error);
-      
-      }
-
-
-    }
-
-      // Continue with any other logic needed after downloading a single file
-      // ...
-      event.sender.send('show-notification', {
-        title: 'نصب کرک',
-        message: 'در حال نصب کرک، لطفا صبور باشید',
-        type: 'info',
-        id: appid,
-      });
-
-      try {
-        for (const file of manifest.crack) {
-            const zipFilePath = path.join(destinationFolder, file.name);
-            const extractPath = destinationFolder;
-            await _7z.unpack(zipFilePath, extractPath, err => {
-              if (err) {
-                console.error(`Error extracting ${file.name}:`, err);
-                event.reply('download-error', { appid, error: `Error extracting ${file.name}` });
-
-                const InfoLog = { vida_id, appid };
-                sendErrorToLog(InfoLog, err);
-                
-                return;
-            }
-              console.log(`File ${file.name} extracted successfully.`);
-              event.sender.send('remove-notification', {id: appid});
-  
-              fs.unlink(zipFilePath, err => {
-                if (err) {
-                    console.error(`Error deleting ${zipFilePath}:`, err);
-
-                    const InfoLog = { vida_id, appid };
-                    sendErrorToLog(InfoLog, err);
-                } else {
-                    console.log(`Deleted ${zipFilePath} after extraction.`);
-                }
-            });
-          });
-  
-        }
-    } catch (error) {
-        console.error('Error extracting files:', error);
-        event.reply('download-error', { appid, error: 'Error extracting files' });
-        const InfoLog = { vida_id, appid };
-        await sendErrorToLog(InfoLog, error);      
-        return;
-    }
-
-      resolve();
-    });
-
-    ipcMain.on('stop-download', (event, stopData) => {
-      if (stopData.appid === appid) {
-        downloaderInstance.stop();
-        // Emit an IPC event to inform the renderer process that the download has been stopped
-        event.sender.send('download-stopped', { appid });
-      }
-    });
-  
-    ipcMain.on('pause-download', (event, pauseData) => {
-      if (pauseData.appid === appid) {
-        downloaderInstance.pause();
-      }
-    });
-  
-    ipcMain.on('resume-download', (event, resumeData) => {
-      if (resumeData.appid === appid) {
-        downloaderInstance.resume();
-      }
-    });
-
-    // Start the download
-    downloaderInstance.start();
-  });
-}
-
 
 
 // Handle 'end' and 'error' events separately

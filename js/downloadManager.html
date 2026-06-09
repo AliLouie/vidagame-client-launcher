@@ -1,0 +1,1421 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VidaGame — مدیریت دانلود</title>
+  <style>
+    /* ══════════════════════════════════════════════════
+       FONTS
+    ══════════════════════════════════════════════════ */
+    @import url('../css/fonts/vazirFont.css');
+
+    /* ══════════════════════════════════════════════════
+       TOKENS
+    ══════════════════════════════════════════════════ */
+    :root {
+      --bg:          #07080a;
+      --bg2:         #0d0f14;
+      --surface:     #12151c;
+      --surface2:    #181c25;
+      --border:      rgba(220,53,69,0.14);
+      --border-h:    rgba(220,53,69,0.38);
+      --red:         #dc3545;
+      --red2:        #f75453;
+      --red-glow:    rgba(220,53,69,0.25);
+      --red-dim:     rgba(220,53,69,0.08);
+      --green:       #22c55e;
+      --green-glow:  rgba(34,197,94,0.25);
+      --yellow:      #f59e0b;
+      --yellow-glow: rgba(245,158,11,0.25);
+      --text:        #f0edf0;
+      --text2:       #9a8fa0;
+      --text3:       #5a5060;
+      --title-bar:   28px;
+      --radius:      16px;
+    }
+
+    /* ══════════════════════════════════════════════════
+       RESET
+    ══════════════════════════════════════════════════ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; overflow: hidden; }
+
+    body {
+      font-family: 'vazir', 'Tahoma', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    /* ══════════════════════════════════════════════════
+       CUSTOM TITLE BAR
+    ══════════════════════════════════════════════════ */
+    #titlebar {
+      height: var(--title-bar);
+      background: #090b10;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px 0 0;
+      -webkit-app-region: drag;
+      flex-shrink: 0;
+    }
+
+    .titlebar-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+    }
+
+    .titlebar-logo {
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 1px;
+      color: #fff;
+    }
+
+    .titlebar-logo span { color: var(--red2); }
+
+    .titlebar-tag {
+      font-size: 9px;
+      color: var(--text3);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
+
+    .titlebar-controls {
+      display: flex;
+      gap: 6px;
+      -webkit-app-region: no-drag;
+    }
+
+    .tc-btn {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      border: none;
+      cursor: pointer;
+      transition: filter 0.2s;
+    }
+    .tc-btn:hover { filter: brightness(1.3); }
+    .tc-close  { background: #ff5f57; }
+    .tc-min    { background: #ffbd2e; }
+    .tc-max    { margin-left: 5px; background: #28c840; }
+
+    /* ══════════════════════════════════════════════════
+       LAYOUT
+    ══════════════════════════════════════════════════ */
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - var(--title-bar));
+      overflow: hidden;
+    }
+
+    /* header strip */
+    #header {
+      flex-shrink: 0;
+      padding: 18px 24px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .header-left h1 {
+      font-size: 1.1rem;
+      font-weight: 900;
+      color: var(--text);
+      letter-spacing: -0.3px;
+    }
+
+    .header-left p {
+      font-size: 0.72rem;
+      color: var(--text3);
+      margin-top: 2px;
+      letter-spacing: 0.5px;
+    }
+
+    .header-stats {
+      display: flex;
+      gap: 18px;
+    }
+
+    .stat-pill {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 6px 16px;
+      min-width: 72px;
+    }
+
+    .stat-pill-val {
+      font-size: 1rem;
+      font-weight: 800;
+      color: var(--red2);
+      line-height: 1;
+    }
+
+    .stat-pill-label {
+      font-size: 0.62rem;
+      color: var(--text3);
+      margin-top: 3px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    /* scrollable list */
+    #game-list {
+      flex: 1;
+      min-height: 0;        /* critical: lets flex child shrink below content size */
+      overflow-y: auto;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* scrollbar */
+    #game-list::-webkit-scrollbar { width: 6px; }
+    #game-list::-webkit-scrollbar-track { background: transparent; }
+    #game-list::-webkit-scrollbar-thumb {
+      background: rgba(220,53,69,0.25);
+      border-radius: 3px;
+    }
+
+    /* empty state */
+    #empty-state {
+      flex: 1;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      color: var(--text3);
+      padding: 40px;
+    }
+
+    #empty-state.visible { display: flex; }
+
+    .empty-icon {
+      font-size: 3rem;
+      opacity: 0.3;
+    }
+
+    .empty-title {
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: var(--text2);
+    }
+
+    .empty-sub {
+      font-size: 0.78rem;
+      text-align: center;
+      line-height: 1.7;
+    }
+
+    /* loading */
+    #loading-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      color: var(--text3);
+    }
+
+    #loading-state.hidden { display: none; }
+
+    .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid rgba(220,53,69,0.15);
+      border-top-color: var(--red2);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ══════════════════════════════════════════════════
+       GAME CARD
+    ══════════════════════════════════════════════════ */
+    .game-card {
+      position: relative;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      overflow: hidden;
+      min-width: 0;         /* allow card to shrink horizontally inside flex */
+      flex-shrink: 0;       /* never compress card height — scroll instead */
+      transition: border-color 0.2s, box-shadow 0.2s;
+      animation: cardReveal 0.35s ease both;
+    }
+
+    @keyframes cardReveal {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .game-card:hover {
+      border-color: var(--border-h);
+      box-shadow: 0 8px 28px rgba(0,0,0,0.35);
+    }
+
+    /* background blur from cover image */
+    .card-bg {
+      position: absolute;
+      inset: 0;
+      background-size: cover;
+      background-position: center;
+      opacity: 0.07;
+      filter: blur(12px) saturate(1.5);
+      pointer-events: none;
+      transition: opacity 0.3s;
+    }
+
+    .game-card:hover .card-bg { opacity: 0.12; }
+
+    /* top accent line */
+    .card-accent {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--red), transparent);
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .game-card.downloading .card-accent { opacity: 1; }
+
+    .card-inner {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      padding: 14px 16px;
+    }
+
+    /* game thumbnail */
+    .card-thumb {
+      width: 74px;
+      height: 54px;
+      border-radius: 10px;
+      object-fit: cover;
+      flex-shrink: 0;
+      border: 1px solid rgba(255,255,255,0.06);
+      background: var(--surface2);
+    }
+
+    /* game info */
+    .card-info {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .card-name {
+      font-size: 0.92rem;
+      font-weight: 800;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .card-meta {
+      font-size: 0.72rem;
+      color: var(--text3);
+      display: flex;
+      gap: 10px;
+    }
+
+    .card-size { color: var(--text2); }
+
+    /* status badge */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      padding: 3px 9px;
+      border-radius: 6px;
+      width: fit-content;
+    }
+
+    .status-badge.downloading {
+      background: rgba(220,53,69,0.15);
+      color: var(--red2);
+      border: 1px solid rgba(220,53,69,0.3);
+    }
+
+    .status-badge.paused {
+      background: rgba(245,158,11,0.12);
+      color: var(--yellow);
+      border: 1px solid rgba(245,158,11,0.25);
+    }
+
+    .status-badge.installing {
+      background: rgba(99,102,241,0.12);
+      color: #818cf8;
+      border: 1px solid rgba(99,102,241,0.25);
+    }
+
+    .status-badge.queued {
+      background: rgba(255,255,255,0.05);
+      color: var(--text3);
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .status-badge.waiting {
+      background: rgba(34,197,94,0.08);
+      color: var(--green);
+      border: 1px solid rgba(34,197,94,0.2);
+    }
+
+    .status-badge.error {
+      background: rgba(220,53,69,0.12);
+      color: var(--red2);
+      border: 1px solid rgba(220,53,69,0.3);
+    }
+
+    /* Error card accent */
+    .game-card.dl-error {
+      border-color: rgba(220,53,69,0.35);
+    }
+
+    .game-card.dl-error .card-accent {
+      background: linear-gradient(90deg, #dc3545, #c82333);
+      opacity: 1;
+    }
+
+    /* Error banner inside the progress-wrap */
+    .dl-error-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 10px 14px;
+      background: rgba(220,53,69,0.08);
+      border: 1px solid rgba(220,53,69,0.2);
+      border-radius: 8px;
+      margin: 0 0 4px;
+    }
+
+    .dl-error-icon { font-size: 15px; flex-shrink: 0; margin-top: 1px; }
+
+    .dl-error-msg {
+      font-size: 0.75rem;
+      color: #f87171;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
+    /* Retry button */
+    .act-btn-retry {
+      background: rgba(220,53,69,0.1);
+      color: var(--red2);
+      border: 1px solid rgba(220,53,69,0.25);
+    }
+
+    .act-btn-retry:hover { background: rgba(220,53,69,0.2); }
+
+    .badge-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .status-badge.downloading .badge-dot {
+      animation: pulse-badge 1s ease-in-out infinite;
+    }
+
+    @keyframes pulse-badge {
+      0%,100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.4; transform: scale(1.4); }
+    }
+
+    /* ── Progress section ── */
+    .card-progress-wrap {
+      padding: 0 16px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .progress-bar-track {
+      height: 5px;
+      background: rgba(255,255,255,0.06);
+      border-radius: 3px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      background: linear-gradient(90deg, var(--red-dim) 0%, var(--red2) 60%, #ff8a80 100%);
+      background-size: 200% 100%;
+      transition: width 0.4s ease;
+      position: relative;
+    }
+
+    .progress-bar-fill.paused {
+      background: linear-gradient(90deg, rgba(245,158,11,0.3), var(--yellow));
+    }
+
+    .progress-bar-fill.installing {
+      background: linear-gradient(90deg, rgba(99,102,241,0.3), #818cf8);
+      animation: installing-shimmer 1.5s ease-in-out infinite;
+    }
+
+    @keyframes installing-shimmer {
+      0%,100% { opacity: 1; }
+      50%      { opacity: 0.6; }
+    }
+
+    /* shine sweep on active download */
+    .progress-bar-fill::after {
+      content: '';
+      position: absolute;
+      top: 0; bottom: 0;
+      width: 40px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+      animation: shine-sweep 1.8s linear infinite;
+    }
+
+    .progress-bar-fill.paused::after,
+    .progress-bar-fill.installing::after { display: none; }
+
+    @keyframes shine-sweep {
+      from { left: -40px; }
+      to   { left: 100%; }
+    }
+
+    .progress-stats {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.72rem;
+      color: var(--text2);
+    }
+
+    .progress-pct {
+      font-weight: 800;
+      font-size: 0.82rem;
+      color: var(--red2);
+    }
+
+    .progress-stats-right {
+      display: flex;
+      gap: 14px;
+    }
+
+    .stat-item {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 1px;
+    }
+
+    .stat-item-val {
+      font-weight: 700;
+      color: var(--text);
+      font-size: 0.78rem;
+    }
+
+    .stat-item-label {
+      font-size: 0.62rem;
+      color: var(--text3);
+      letter-spacing: 0.3px;
+    }
+
+    /* ── Card action buttons ── */
+    .card-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 16px 14px;
+    }
+
+    .act-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      border: none;
+      cursor: pointer;
+      border-radius: 9px;
+      font-family: 'vazir', 'Tahoma', sans-serif;
+      font-weight: 700;
+      font-size: 0.76rem;
+      padding: 6px 14px;
+      min-height: 32px;
+      transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
+    }
+
+    .act-btn:active { transform: scale(0.96); }
+
+    .act-btn-start {
+      background: linear-gradient(135deg, var(--red2), var(--red));
+      color: #fff;
+      box-shadow: 0 4px 14px var(--red-glow);
+      flex: 1;
+    }
+
+    .act-btn-start:hover { box-shadow: 0 6px 20px rgba(220,53,69,0.5); }
+
+    .act-btn-pause {
+      background: rgba(245,158,11,0.12);
+      color: var(--yellow);
+      border: 1px solid rgba(245,158,11,0.25);
+      flex: 1;
+    }
+
+    .act-btn-pause:hover { background: rgba(245,158,11,0.2); }
+
+    .act-btn-resume {
+      background: rgba(34,197,94,0.1);
+      color: var(--green);
+      border: 1px solid rgba(34,197,94,0.2);
+      flex: 1;
+    }
+
+    .act-btn-resume:hover { background: rgba(34,197,94,0.18); }
+
+    .act-btn-stop {
+      background: rgba(220,53,69,0.08);
+      color: var(--red2);
+      border: 1px solid rgba(220,53,69,0.2);
+      width: 32px;
+      padding: 6px;
+    }
+
+    .act-btn-stop:hover { background: rgba(220,53,69,0.18); }
+
+    .act-btn-icon { font-size: 14px; }
+
+    /* ── ETA banner ── */
+    .eta-banner {
+      margin: 0 16px 10px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.05);
+      border-radius: 9px;
+      padding: 6px 12px;
+      font-size: 0.72rem;
+      color: var(--text2);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .eta-icon { font-size: 12px; }
+
+    /* ══════════════════════════════════════════════════
+       NOTIFICATION TOAST
+    ══════════════════════════════════════════════════ */
+    #toast-container {
+      position: fixed;
+      bottom: 20px;
+      left: 20px;
+      display: flex;
+      flex-direction: column-reverse;
+      gap: 8px;
+      z-index: 100;
+      pointer-events: none;
+      max-width: 300px;
+    }
+
+    .toast {
+      padding: 10px 14px;
+      border-radius: 11px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.1);
+      backdrop-filter: blur(12px);
+      animation: toastIn 0.3s cubic-bezier(0.34,1.56,0.64,1) forwards;
+      pointer-events: none;
+    }
+
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateX(-16px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    .toast.success { background: rgba(34,197,94,0.85); }
+    .toast.danger  { background: rgba(220,53,69,0.88); }
+    .toast.warning { background: rgba(245,158,11,0.85); }
+    .toast.info    { background: rgba(99,102,241,0.85); }
+
+    /* ══════════════════════════════════════════════════
+       FOOTER
+    ══════════════════════════════════════════════════ */
+    #footer {
+      flex-shrink: 0;
+      height: 30px;
+      background: #090b10;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      font-size: 0.65rem;
+      color: var(--text3);
+    }
+
+    #global-speed {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .speed-dot {
+      width: 6px; height: 6px;
+      background: var(--green);
+      border-radius: 50%;
+      animation: pulse-badge 1.5s infinite;
+    }
+
+    /* ══════════════════════════════════════════════════
+       CONFIRM DIALOG
+    ══════════════════════════════════════════════════ */
+    #confirm-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(4px);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #confirm-overlay.visible { display: flex; }
+
+    #confirm-box {
+      background: var(--surface);
+      border: 1px solid var(--border-h);
+      border-radius: 18px;
+      padding: 28px 32px;
+      width: 340px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.6);
+    }
+
+    #confirm-icon { font-size: 2.5rem; }
+
+    #confirm-title {
+      font-size: 1rem;
+      font-weight: 800;
+      color: var(--text);
+    }
+
+    #confirm-msg {
+      font-size: 0.82rem;
+      color: var(--text2);
+      line-height: 1.7;
+    }
+
+    .confirm-buttons {
+      display: flex;
+      gap: 10px;
+    }
+
+    .confirm-btn {
+      flex: 1;
+      padding: 10px;
+      border-radius: 10px;
+      border: none;
+      cursor: pointer;
+      font-family: 'vazir', sans-serif;
+      font-weight: 700;
+      font-size: 0.82rem;
+      transition: opacity 0.15s;
+    }
+
+    .confirm-btn:hover { opacity: 0.85; }
+
+    #confirm-yes {
+      background: linear-gradient(135deg, var(--red2), var(--red));
+      color: #fff;
+      box-shadow: 0 4px 14px var(--red-glow);
+    }
+
+    #confirm-no {
+      background: var(--surface2);
+      color: var(--text2);
+      border: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Custom title bar -->
+  <div id="titlebar">
+    <div class="titlebar-left">
+      <span class="titlebar-logo">VIDA<span>GAME</span></span>
+      <span class="titlebar-tag">مدیریت دانلود</span>
+    </div>
+    <div class="titlebar-controls">
+      <button class="tc-btn tc-close"  onclick="ipcRenderer.send('window-close')"  title="بستن"></button>
+      <button class="tc-btn tc-min"    onclick="ipcRenderer.send('window-minimize')" title="کوچک‌کردن"></button>
+      <button class="tc-btn tc-max"    onclick="ipcRenderer.send('window-maximize')" title="بزرگ‌کردن"></button>
+    </div>
+  </div>
+
+  <div id="app">
+    <!-- Header -->
+    <div id="header">
+      <div class="header-left">
+        <h1>مدیریت دانلود</h1>
+        <p>بازی‌های در صف دانلود و نصب</p>
+      </div>
+      <div class="header-stats">
+        <div class="stat-pill">
+          <span class="stat-pill-val" id="stat-active">0</span>
+          <span class="stat-pill-label">فعال</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-pill-val" id="stat-total">0</span>
+          <span class="stat-pill-label">کل</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading -->
+    <div id="loading-state">
+      <div class="spinner"></div>
+      <span style="font-size:0.82rem;color:var(--text3)">در حال بارگذاری...</span>
+    </div>
+
+    <!-- Empty state -->
+    <div id="empty-state">
+      <div class="empty-icon">📦</div>
+      <div class="empty-title">دانلود فعالی وجود ندارد</div>
+      <div class="empty-sub">
+        برای دانلود بازی، از بخش کتابخانه یا فروشگاه اقدام کنید.<br/>
+        دانلودهای فعال اینجا نمایش داده می‌شوند.
+      </div>
+    </div>
+
+    <!-- Game list -->
+    <div id="game-list"></div>
+
+    <!-- Footer -->
+    <div id="footer">
+      <span>VidaGame Launcher</span>
+      <div id="global-speed">
+        <div class="speed-dot"></div>
+        <span id="speed-text">آماده</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast-container"></div>
+
+  <!-- Confirm dialog -->
+  <div id="confirm-overlay">
+    <div id="confirm-box">
+      <div id="confirm-icon">⚠️</div>
+      <div id="confirm-title">تأیید عملیات</div>
+      <div id="confirm-msg"></div>
+      <div class="confirm-buttons">
+        <button class="confirm-btn" id="confirm-yes">بله، حذف کن</button>
+        <button class="confirm-btn" id="confirm-no">انصراف</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* ══════════════════════════════════════════════════
+       IPC BRIDGE  (Electron nodeIntegration = true)
+    ══════════════════════════════════════════════════ */
+    const { ipcRenderer } = window.require('electron');
+
+    /* ══════════════════════════════════════════════════
+       STATE
+    ══════════════════════════════════════════════════ */
+    const state = {
+      games:          [],          // { appid, name, image, downloadurl, manifesturl, updating, update_files, is_Crack }
+      current:        null,        // currently downloading game
+      errors:         {},          // appid -> error message string
+      progress:       {},          // appid -> { progress, speed, downloaded, totalSize, estimatedTimeLeft }
+      downloadStarted:{},          // appid -> bool
+      showStart:      {},          // appid -> bool  (false = progress active)
+      paused:         {},          // appid -> bool
+      installing:     {},          // appid -> bool
+      activeCount:    0,
+    };
+
+    /* ══════════════════════════════════════════════════
+       HELPERS
+    ══════════════════════════════════════════════════ */
+    function toast(message, type = 'info', duration = 3500) {
+      const el = document.createElement('div');
+      el.className = `toast ${type}`;
+      el.textContent = message;
+      document.getElementById('toast-container').appendChild(el);
+      setTimeout(() => el.remove(), duration);
+    }
+
+    function confirm(msg, onYes) {
+      document.getElementById('confirm-msg').textContent = msg;
+      document.getElementById('confirm-overlay').classList.add('visible');
+      const yes = document.getElementById('confirm-yes');
+      const no  = document.getElementById('confirm-no');
+      const close = () => document.getElementById('confirm-overlay').classList.remove('visible');
+      yes.onclick = () => { close(); onYes(); };
+      no.onclick  = close;
+    }
+
+    function updateStats() {
+      const active = Object.values(state.showStart).filter(v => v === false).length;
+      state.activeCount = active;
+      document.getElementById('stat-active').textContent = active;
+      document.getElementById('stat-total').textContent  = state.games.length;
+    }
+
+    /* ══════════════════════════════════════════════════
+       RENDER ENGINE
+    ══════════════════════════════════════════════════ */
+    function render() {
+      const list    = document.getElementById('game-list');
+      const empty   = document.getElementById('empty-state');
+      const loading = document.getElementById('loading-state');
+
+      loading.classList.add('hidden');
+
+      if (state.games.length === 0) {
+        list.style.display  = 'none';
+        empty.classList.add('visible');
+        updateStats();
+        return;
+      }
+
+      list.style.display  = 'flex';
+      empty.classList.remove('visible');
+
+      // reconcile cards — only update changed
+      state.games.forEach(game => {
+        let card = document.getElementById(`card-${game.appid}`);
+        if (!card) {
+          card = buildCard(game);
+          list.appendChild(card);
+        }
+        updateCard(card, game);
+      });
+
+      updateStats();
+    }
+
+    function buildCard(game) {
+      const card = document.createElement('div');
+      card.className = 'game-card';
+      card.id = `card-${game.appid}`;
+      card.innerHTML = `
+        <div class="card-bg" id="bg-${game.appid}"></div>
+        <div class="card-accent"></div>
+        <div class="card-inner">
+          <img class="card-thumb" id="thumb-${game.appid}" src="" alt="${game.name}" />
+          <div class="card-info">
+            <div class="card-name">${game.name}</div>
+            <div class="card-meta">
+              <span class="card-size" id="size-${game.appid}">—</span>
+            </div>
+            <div id="badge-${game.appid}"></div>
+          </div>
+        </div>
+
+        <!-- progress -->
+        <div class="card-progress-wrap" id="progress-wrap-${game.appid}" style="display:none">
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="bar-${game.appid}" style="width:0%"></div>
+          </div>
+          <div class="progress-stats">
+            <span class="progress-pct" id="pct-${game.appid}">0%</span>
+            <div class="progress-stats-right">
+              <div class="stat-item">
+                <span class="stat-item-val" id="speed-${game.appid}">—</span>
+                <span class="stat-item-label">سرعت</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-item-val" id="dl-${game.appid}">—</span>
+                <span class="stat-item-label">دانلود شده</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-item-val" id="total-${game.appid}">—</span>
+                <span class="stat-item-label">کل</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ETA -->
+        <div class="eta-banner" id="eta-${game.appid}" style="display:none">
+          <span class="eta-icon">⏱</span>
+          <span id="eta-val-${game.appid}">—</span>
+        </div>
+
+        <!-- actions -->
+        <div class="card-actions" id="actions-${game.appid}"></div>
+      `;
+      return card;
+    }
+
+    function updateCard(card, game) {
+      const appid   = game.appid;
+      const prog    = state.progress[appid];
+      const started = state.downloadStarted[appid];
+      const noStart = state.showStart[appid] === false;
+      const isPaused  = state.paused[appid];
+      const isInstall = state.installing[appid];
+      const isCurrent = state.current && state.current.appid === appid; // Currently downloading
+      const hasError  = !!state.errors[appid];
+
+      // background image
+      const bg = document.getElementById(`bg-${appid}`);
+      const thumb = document.getElementById(`thumb-${appid}`);
+      if (game.image) {
+        bg.style.backgroundImage = `url(${game.image})`;
+        thumb.src = game.image;
+      }
+
+      // card state classes
+      card.classList.toggle('downloading', !hasError && ((noStart && !isPaused && !isInstall) || isCurrent));
+      card.classList.toggle('dl-error', hasError);
+
+      // badge
+      const badge = document.getElementById(`badge-${appid}`);
+      if (hasError) {
+        badge.innerHTML = `<div class="status-badge error"><div class="badge-dot"></div>خطا در دانلود</div>`;
+      } else if (isInstall) {
+        badge.innerHTML = `<div class="status-badge installing"><div class="badge-dot"></div>در حال نصب...</div>`;
+      } else if (isCurrent && prog) {
+        badge.innerHTML = `<div class="status-badge downloading"><div class="badge-dot"></div>در حال دانلود</div>`;
+      } else if (isCurrent && !prog) {
+        badge.innerHTML = `<div class="status-badge waiting"><div class="badge-dot"></div>در حال شروع...</div>`;
+      } else if (!noStart && started) {
+        badge.innerHTML = `<div class="status-badge waiting"><div class="badge-dot"></div>در حال شروع...</div>`;
+      } else if (noStart && isPaused) {
+        badge.innerHTML = `<div class="status-badge paused"><div class="badge-dot"></div>متوقف شده</div>`;
+      } else if (noStart) {
+        badge.innerHTML = `<div class="status-badge downloading"><div class="badge-dot"></div>در حال دانلود</div>`;
+      } else {
+        badge.innerHTML = `<div class="status-badge queued"><div class="badge-dot"></div>در صف</div>`;
+      }
+
+      // progress section
+      const pWrap = document.getElementById(`progress-wrap-${appid}`);
+      const etaBanner = document.getElementById(`eta-${appid}`);
+      if (hasError) {
+        // Show error message where the progress bar normally lives
+        pWrap.style.display = '';
+        pWrap.innerHTML = `
+          <div class="dl-error-banner">
+            <span class="dl-error-icon">⚠️</span>
+            <span class="dl-error-msg">${state.errors[appid]}</span>
+          </div>`;
+        etaBanner.style.display = 'none';
+      } else if (prog) {
+        pWrap.style.display = '';
+        document.getElementById(`bar-${appid}`).style.width  = `${prog.progress}%`;
+        document.getElementById(`pct-${appid}`).textContent  = `${prog.progress}%`;
+        document.getElementById(`speed-${appid}`).textContent = prog.speed    || '—';
+        document.getElementById(`dl-${appid}`).textContent    = prog.downloaded || '—';
+        document.getElementById(`total-${appid}`).textContent = prog.totalSize  || '—';
+        document.getElementById(`size-${appid}`).textContent  = prog.totalSize  || '—';
+
+        const bar = document.getElementById(`bar-${appid}`);
+        bar.className = 'progress-bar-fill';
+        if (isPaused) bar.classList.add('paused');
+        if (isInstall) bar.classList.add('installing');
+
+        if (prog.estimatedTimeLeft && prog.estimatedTimeLeft !== '0h 0m 0s') {
+          etaBanner.style.display = '';
+          document.getElementById(`eta-val-${appid}`).textContent = `زمان باقیمانده: ${prog.estimatedTimeLeft}`;
+        } else {
+          etaBanner.style.display = 'none';
+        }
+
+        // global speed in footer
+        document.getElementById('speed-text').textContent = prog.speed || 'آماده';
+      } else {
+        pWrap.style.display  = 'none';
+        etaBanner.style.display = 'none';
+      }
+
+      // actions
+      const actions = document.getElementById(`actions-${appid}`);
+      actions.innerHTML = '';
+
+      if (hasError) {
+        // Retry button
+        const retryBtn = document.createElement('button');
+        retryBtn.className = 'act-btn act-btn-retry';
+        retryBtn.innerHTML = '<span class="act-btn-icon">🔄</span> تلاش مجدد';
+        retryBtn.onclick = () => retryDownload(appid);
+        actions.appendChild(retryBtn);
+
+        // Remove from queue button
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'act-btn act-btn-stop';
+        removeBtn.innerHTML = '🗑';
+        removeBtn.title = 'حذف از صف';
+        removeBtn.onclick = () => {
+          confirm(`آیا مطمئن هستید؟ "${game.name}" از صف دانلود حذف می‌شود.`, () => {
+            ipcRenderer.send('delete-game', { appid });
+            state.games = state.games.filter(g => g.appid !== appid);
+            delete state.errors[appid];
+            delete state.progress[appid];
+            document.getElementById(`card-${appid}`)?.remove();
+            render();
+          });
+        };
+        actions.appendChild(removeBtn);
+        return;
+      }
+
+      if (isInstall) {
+        // Installing — nothing to control
+        const btn = document.createElement('button');
+        btn.className = 'act-btn';
+        btn.style.cssText = 'flex:1;background:rgba(99,102,241,0.1);color:#818cf8;border:1px solid rgba(99,102,241,0.2);cursor:default';
+        btn.textContent = '⏳ در حال نصب — لطفاً صبر کنید';
+        btn.disabled = true;
+        actions.appendChild(btn);
+        return;
+      }
+
+      // For queued games that are automatically processed, only show controls if currently downloading
+      if (isCurrent) {
+        // Currently downloading - show pause/resume and stop
+        if (isPaused) {
+          const resumeBtn = document.createElement('button');
+          resumeBtn.className = 'act-btn act-btn-resume';
+          resumeBtn.innerHTML = '<span class="act-btn-icon">▶</span> ادامه';
+          resumeBtn.onclick = () => resumeDownload(appid);
+          actions.appendChild(resumeBtn);
+        } else {
+          const pauseBtn = document.createElement('button');
+          pauseBtn.className = 'act-btn act-btn-pause';
+          pauseBtn.innerHTML = '<span class="act-btn-icon">⏸</span> توقف موقت';
+          pauseBtn.onclick = () => pauseDownload(appid);
+          actions.appendChild(pauseBtn);
+        }
+
+        const stopBtn = document.createElement('button');
+        stopBtn.className = 'act-btn act-btn-stop';
+        stopBtn.innerHTML = '🗑';
+        stopBtn.title = 'لغو و حذف';
+        stopBtn.onclick = () => {
+          confirm(`آیا مطمئن هستید؟ دانلود "${game.name}" لغو و فایل‌ها حذف می‌شوند.`, () => {
+            stopDownload(appid);
+          });
+        };
+        actions.appendChild(stopBtn);
+      } else {
+        // In queue but not currently downloading — show "شروع دانلود" + "حذف از صف"
+        const startBtn = document.createElement('button');
+        startBtn.className = 'act-btn act-btn-start';
+        startBtn.innerHTML = '<span class="act-btn-icon">⬇</span> شروع دانلود';
+        startBtn.onclick = () => {
+          // Block if another download is already active
+          if (state.current && state.current.appid !== appid) {
+            toast('شما در حال حاضر دانلود فعال دارید', 'warning', 3500);
+            return;
+          }
+          // Prevent spam: disable immediately
+          startBtn.disabled = true;
+          startBtn.innerHTML = '<span class="act-btn-icon">⏳</span> در حال شروع...';
+          // Tell main process to start / resume this item
+          ipcRenderer.send('retry-download', { appid });
+        };
+        actions.appendChild(startBtn);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'act-btn act-btn-remove';
+        removeBtn.innerHTML = '<span class="act-btn-icon">🗑</span> حذف از صف';
+        removeBtn.onclick = () => {
+          confirm(`آیا مطمئن هستید؟ "${game.name}" از صف دانلود حذف می‌شود.`, () => {
+            ipcRenderer.send('delete-game', { appid });
+          });
+        };
+        actions.appendChild(removeBtn);
+      }
+    }
+
+    /* ══════════════════════════════════════════════════
+       IPC ACTIONS
+    ══════════════════════════════════════════════════ */
+    function startDownload(game) {
+      state.downloadStarted[game.appid] = true;
+      render();
+
+      ipcRenderer.send('download-game', {
+        ...game,
+        downloadurl:  game.downloadurl,
+        appid:        game.appid,
+        manifesturl:  game.manifesturl,
+        updating:     game.updating,
+        update_files: game.update_files,
+        is_Crack:     game.is_Crack,
+      });
+    }
+
+    async function pauseDownload(appid) {
+      state.paused[appid] = true;
+      const token = await getToken();
+      ipcRenderer.send('pause-download', { appid, token });
+      render();
+    }
+
+    async function resumeDownload(appid) {
+      state.paused[appid] = false;
+      const token = await getToken();
+      ipcRenderer.send('resume-download', { appid, token });
+      render();
+    }
+
+    async function stopDownload(appid) {
+      const token = await getToken();
+      ipcRenderer.send('stop-download', { appid, token });
+      ipcRenderer.send('delete-game', { appid, vida_id: window.__vida_id__ || '' });
+      state.games = state.games.filter(g => g.appid !== appid);
+      delete state.progress[appid];
+      delete state.downloadStarted[appid];
+      delete state.showStart[appid];
+      delete state.paused[appid];
+      delete state.installing[appid];
+      document.getElementById(`card-${appid}`)?.remove();
+      render();
+      toast('دانلود متوقف و حذف شد', 'danger');
+    }
+
+    function retryDownload(appid) {
+      // Clear local error state
+      delete state.errors[appid];
+      state.downloadStarted[appid] = false;
+
+      // Restore the progress-wrap to its original bar structure
+      // (we replaced its innerHTML with the error banner — rebuild it)
+      const pWrap = document.getElementById(`progress-wrap-${appid}`);
+      if (pWrap) {
+        pWrap.style.display = 'none';
+        pWrap.innerHTML = `
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="bar-${appid}" style="width:0%"></div>
+          </div>
+          <div class="progress-stats">
+            <span class="progress-pct" id="pct-${appid}">0%</span>
+            <div class="progress-stats-right">
+              <div class="stat-item">
+                <span class="stat-item-val" id="speed-${appid}">—</span>
+                <span class="stat-item-label">سرعت</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-item-val" id="dl-${appid}">—</span>
+                <span class="stat-item-label">دانلود شده</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-item-val" id="total-${appid}">—</span>
+                <span class="stat-item-label">کل</span>
+              </div>
+            </div>
+          </div>`;
+      }
+
+      // Tell the main process to retry
+      ipcRenderer.send('retry-download', { appid });
+
+      // Re-render the card to show the queued/starting badge + normal buttons
+      const card = document.getElementById(`card-${appid}`);
+      if (card) {
+        const game = state.games.find(g => g.appid === appid);
+        if (game) updateCard(card, game);
+      }
+    }
+
+      function getToken() {
+        return new Promise((resolve) => {
+          const handler = (_event, token) => {
+            ipcRenderer.removeListener('token-checked', handler);
+            resolve(token || '');
+          };
+
+          ipcRenderer.on('token-checked', handler);
+          ipcRenderer.send('check-token');
+        });
+      }
+
+    /* ══════════════════════════════════════════════════
+       IPC LISTENERS
+    ══════════════════════════════════════════════════ */
+
+    // Updates ONLY the progress bar / stats numbers — never touches action buttons.
+    // Called on every update-progress tick so buttons stay alive and clickable.
+    function updateCardProgress(card, game) {
+      const appid  = game.appid;
+      const prog   = state.progress[appid];
+      const isPaused = state.paused[appid] || game.isPaused || (state.current?.appid === appid && state.isPaused);
+      const isInstall = state.installing[appid];
+
+      // keep card class in sync without touching innerHTML
+      card.classList.toggle('downloading', !isPaused && !isInstall);
+      card.classList.toggle('paused', isPaused);
+
+      // update badge text only (no DOM replace, just innerText swap)
+      const badge = document.getElementById(`badge-${appid}`);
+      if (badge) {
+        const inner = badge.firstElementChild;
+        if (inner) {
+          if (isInstall)   inner.lastChild.textContent = 'در حال نصب...';
+          else if (isPaused) inner.lastChild.textContent = 'متوقف شده';
+          else               inner.lastChild.textContent = 'در حال دانلود';
+        }
+      }
+
+      if (!prog) return;
+
+      const pWrap = document.getElementById(`progress-wrap-${appid}`);
+      const etaBanner = document.getElementById(`eta-${appid}`);
+      if (!pWrap) return;
+
+      pWrap.style.display = '';
+      document.getElementById(`bar-${appid}`).style.width   = `${prog.progress}%`;
+      document.getElementById(`pct-${appid}`).textContent   = `${prog.progress}%`;
+      document.getElementById(`speed-${appid}`).textContent = prog.speed      || '—';
+      document.getElementById(`dl-${appid}`).textContent    = prog.downloaded || '—';
+      document.getElementById(`total-${appid}`).textContent = prog.totalSize  || '—';
+      document.getElementById(`size-${appid}`).textContent  = prog.totalSize  || '—';
+
+      const bar = document.getElementById(`bar-${appid}`);
+      bar.className = 'progress-bar-fill';
+      if (isPaused)  bar.classList.add('paused');
+      if (isInstall) bar.classList.add('installing');
+
+      if (prog.estimatedTimeLeft && prog.estimatedTimeLeft !== '0h 0m 0s') {
+        etaBanner.style.display = '';
+        document.getElementById(`eta-val-${appid}`).textContent = `زمان باقیمانده: ${prog.estimatedTimeLeft}`;
+      } else {
+        etaBanner.style.display = 'none';
+      }
+
+      document.getElementById('speed-text').textContent = prog.speed || 'آماده';
+    }
+
+
+    // Initial game list from main process
+    ipcRenderer.on('download-manager-games', (event, data) => {
+      const games = data?.queue || [];
+      state.games = games;
+      state.current = data?.current || null;
+      games.forEach(g => {
+        state.showStart[g.appid] = true;   // default: show start
+        state.downloadStarted[g.appid] = false;
+        // Restore persisted pause state so the correct button shows on window reopen
+        if (g._paused) state.paused[g.appid] = true;
+        // Game is back in the queue — it is NOT installing. Clear any stale flag
+        // left over from a previous completed download of the same appid.
+        delete state.installing[g.appid];
+      });
+      render();
+    });
+
+    // Progress updates from downloader
+    ipcRenderer.on('update-progress', (event, data) => {
+      state.progress[data.appid] = data;
+      state.showStart[data.appid] = false; // progress started
+      state.installing[data.appid] = false;
+
+      const card = document.getElementById(`card-${data.appid}`);
+      if (card) {
+        const game = state.games.find(g => g.appid === data.appid);
+        if (game) updateCardProgress(card, game); // only update numbers, never touch buttons
+      }
+
+      updateStats();
+    });
+
+    // Notification from main process
+    ipcRenderer.on('show-notification', (event, { title, message, type }) => {
+      const map = { success: 'success', danger: 'danger', warning: 'warning', info: 'info', error: 'danger' };
+      toast(`${title}: ${message}`, map[type] || 'info');
+    });
+
+    // Install started
+    ipcRenderer.on('installing-game', (event, { appid }) => {
+      state.installing[appid] = true;
+      const card = document.getElementById(`card-${appid}`);
+      if (card) {
+        const game = state.games.find(g => g.appid === appid);
+        if (game) updateCard(card, game);
+      }
+    });
+
+    // Install / download complete
+    ipcRenderer.on('remove-notification', (event, { id: appid }) => {
+      state.installing[appid] = false;
+      toast('بازی با موفقیت نصب شد ✅', 'success', 5000);
+
+      setTimeout(() => {
+        state.games = state.games.filter(g => g.appid !== appid);
+        document.getElementById(`card-${appid}`)?.remove();
+        // Full cleanup so stale state never bleeds into a future re-download
+        delete state.installing[appid];
+        delete state.progress[appid];
+        delete state.downloadStarted[appid];
+        delete state.showStart[appid];
+        delete state.paused[appid];
+        delete state.errors[appid];
+        render();
+      }, 3000);
+    });
+
+    ipcRenderer.on('download-complete', (event, { appid }) => {
+      // show installing state until remove-notification fires
+      state.installing[appid] = true;
+      const card = document.getElementById(`card-${appid}`);
+      if (card) {
+        const game = state.games.find(g => g.appid === appid);
+        if (game) updateCard(card, game);
+      }
+    });
+
+    ipcRenderer.on('download-error', (event, { appid, error }) => {
+      state.errors[appid]    = error || 'خطای ناشناخته';
+      state.installing[appid] = false;
+      state.downloadStarted[appid] = false;
+      delete state.showStart[appid];
+
+      const card = document.getElementById(`card-${appid}`);
+      if (card) {
+        const game = state.games.find(g => g.appid === appid);
+        if (game) updateCard(card, game);   // full re-render so error UI + retry button appear
+      }
+    });
+
+    /* ══════════════════════════════════════════════════
+       INIT — ask main process for the queued games
+    ══════════════════════════════════════════════════ */
+    window.addEventListener('DOMContentLoaded', () => {
+      ipcRenderer.send('request-download-manager-games');
+    });
+  </script>
+</body>
+</html>
